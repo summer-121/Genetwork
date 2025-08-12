@@ -204,15 +204,23 @@ def parse_args() -> argparse.Namespace:
 def resolve_globs(patterns: Iterable[str]) -> List[pathlib.Path]:
     files: List[pathlib.Path] = []
     for patt in patterns:
+        p = pathlib.Path(patt)
+        if p.exists():             # 파일/폴더 경로를 그대로 받은 경우
+            if p.is_file():
+                files.append(p)
+            else:
+                files.extend(p.rglob("*.pdf"))
+            continue
+        # 글롭 패턴인 경우 (예: Papers/*.pdf)
         files.extend(pathlib.Path().glob(patt))
-    # de-duplicate while preserving order
+    # 중복 제거 (순서 유지)
     seen = set()
     unique: List[pathlib.Path] = []
     for f in files:
-        p = f.resolve()
-        if p not in seen:
-            seen.add(p)
-            unique.append(p)
+        r = f.resolve()
+        if r not in seen:
+            seen.add(r)
+            unique.append(r)
     return unique
 
 
