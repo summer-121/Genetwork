@@ -1,0 +1,350 @@
+# 외부 라이브러리 모음집
+from Bio import Entrez
+import numpy as np
+import pandas as pd
+from scipy import stats
+from scipy.stats import norm
+from sklearn.metrics import roc_auc_score
+import networkx as nx
+import argparse
+import sys
+# import math  #이건 나중에 필요하게 되면 활성화할 예정
+import warnings
+
+# 1. Data_Access: 데이터베이스 접근용
+
+# 1-1. NCBI에서 정보 가져오는 함수
+def ncbi_access(gene_name: str, organism: str):
+
+        # 1. NCBI Search Query 생성 및 검색
+        search_query = f"{gene_name}[Gene Name] AND {organism}[Organism]"
+        handle = Entrez.esearch(db="gene", term=search_query)
+        record = Entrez.read(handle)
+        handle.close()
+
+        # 2. 검색 결과에서 첫 번째 Gene ID 가져오기
+        gene_id = record["IdList"][0]
+        print(f"Gene ID: {gene_id}")
+
+        # 3. 유전자 요약 정보 가져오기
+        handle = Entrez.esummary(db="gene", id=gene_id)
+        summary = Entrez.read(handle)
+        handle.close()
+
+        # 4. 요약 내용 출력
+        gene_info = summary['DocumentSummarySet']['DocumentSummary'][0]
+        print("Gene Symbol:", gene_info['NomenclatureSymbol'])
+        print("Description:", gene_info['Description'])
+        print("Chromosome:", gene_info['Chromosome'])
+        print("Map Location:", gene_info['MapLocation'])
+        print("Summary:", gene_info['Summary'])
+
+
+
+
+# 2. Importance: 중요도 계산 코드
+
+class Importance:
+    # 클래스 생성자
+    def __init__(self,
+                 alpha_diff: float = 0.5,                         # LFC와 p-value Z를 섞는 가중치 alpha (0~1)
+                 beta_weights: tuple = (0.5, 0.2, 0.3),           # SCORE1 내 Diff, Rob, AUC의 가중치 (추후 회의를 통해 조정, 합=1)
+                 gamma_weights: tuple = (0.25, 0.25, 0.25, 0.25), # SCORE2 내 degree, closeness, betweenness, eigen 가중치 (추후 회의를 통해 조정, 합=1)
+                 omega_weights: tuple = (0.7, 0.3),               # 최종 SCORE의 SCORE1, SCORE2 가중치
+                 eps: float = 1e-6):                              # 로그 계산시 0 방지용 작은 상수
+        # 입력 가중치 인스턴스화
+        self.alpha_diff = float(alpha_diff)                        # alpha를 float로 보관
+        self.beta_weights = tuple(beta_weights)                    # beta 가중치 튜플로 보관
+        self.gamma_weights = tuple(gamma_weights)                  # gamma 가중치 튜플로 보관
+        self.omega_weights = tuple(omega_weights)                  # omega 가중치 튜플로 보관
+        self.eps = float(eps)                                      # eps 값을 float로 보관
+
+        # 데이터 관련 속성 초기화 (나중에 load_data로 채움)
+        self.expr = None                                           # 유전자 발현 DataFrame (samples x genes)
+        self.labels = None                                         # 샘플 라벨 Series (index = sample ids)
+        self.edges = None                                          # 네트워크 엣지 DataFrame
+
+        # 내부 계산 결과 초기값
+        self.df_expr = None                                        # 발현 기반 계산 결과 DataFrame (genes index)
+        self.df_net = None                                         # 네트워크 중심성 계산 결과 DataFrame (genes index)
+        self.result = None                                         # 최종 병합 결과 DataFrame (genes index)
+
+    @staticmethod
+    def _safe_log2(x, eps=1e-6):
+        return np.log2(np.clip(x + eps, a_min=eps, a_max=None))    # log2 분모 0 방지
+
+    @staticmethod
+    def _min_max_series(s: pd.Series) -> pd.Series:
+        mn: float = float(np.nanmin(s))                            # 최솟값
+        mx: float = float(np.nanmax(s))                            # 최댓값
+        if np.isclose(mx, mn):                                     # 최솟값과 최댓값이 같으면 Series 전체에 0 출력
+            return pd.Series(np.zeros_like(s), index=s.index)
+        return (s - mn) / (mx - mn)                                # 일반적인 min-max 공식
+
+    @staticmethod
+    def _median_abs_deviation(arr: np.ndarray) -> float:
+        med: float = float(np.nanmedian(arr))                      # 중앙값 계산
+        return float(np.nanmedian(np.abs(arr - med)))              # 중앙값으로부터의 절대편차들 중앙값 반환
+
+    def load_data(self, expression_csv: str, labels_csv: str, edges_csv: str):
+        """
+        세 파일을 읽어들여 내부 속성에 저장.
+        - expression_csv: samples x genes (index=sample IDs)
+        - labels_csv: columns ['sample','label'] (sample은 expression의 인덱스와 일치) --> 라벨에서 1은 암세포 데이터, 0은 정상세포 데이터
+        - edges_csv: columns at least ['source','target']
+        결국 전처리 알고리즘에서 여기 있는 3개 csv를 만들어내야 함!! 아니면 데이터프레임 형태로 가져와도 되긴 함. 전처리 알고리즘 별도 제작 필요
+        """
+        # expression 파일 읽기: 첫 열을 인덱스로 사용
+        self.expr = pd.read_csv(expression_csv, index_col=0)       # CSV 파일을 읽어 DataFrame으로 저장 (샘플이 index)
+        # labels 파일 읽기: sample을 인덱스로 하여 Series로 변환
+        labels_df = pd.read_csv(labels_csv)                        # labels CSV 읽기 (index 지정 전)
+        if 'sample' not in labels_df.columns or 'label' not in labels_df.columns:
+            raise ValueError("labels.csv는 'sample'과 'label' 컬럼을 포함해야 함.")  # 포맷 체크
+        labels_df = labels_df.set_index('sample')                  # 'sample' 칼럼을 인덱스로 설정
+        self.labels = labels_df['label'].reindex(self.expr.index)  # expression의 샘플 순서에 맞게 재배열
+        if self.labels.isnull().any():
+            missing = self.labels[self.labels.isnull()].index.tolist()
+            raise ValueError(f"expression.csv의 일부 샘플이 labels.csv에 없음: {missing}")  # 매칭 실패 시 예외
+
+        # edges 파일 읽기
+        self.edges = pd.read_csv(edges_csv)                        # 네트워크 엣지 리스트 읽기
+        if 'source' not in self.edges.columns or 'target' not in self.edges.columns:
+            raise ValueError("network_edges.csv는 'source'와 'target' 컬럼을 포함해야 함.")  # 포맷 체크
+
+        # expression 값의 타입을 숫자로 강제 변환 (문자열 등으로 인해 생긴 문제 방지)
+        self.expr = self.expr.apply(pd.to_numeric, errors='coerce')  # 변환 불가 항목은 NaN으로 처리
+
+    # 발현 기반 점수 계산
+    def compute_expression_scores(self):
+
+        # 지역 변수에 편의상 할당
+        expr = self.expr                                            # 샘플 x 유전자 DataFrame
+        labels = self.labels                                        # 샘플별 라벨 Series
+        genes = expr.columns.tolist()                               # 유전자 목록(컬럼명 리스트)
+
+        # 암/정상 샘플 인덱스 분리 (label 값이 1이면 암, 0이면 정상으로 가정)
+        cancer_idx = labels[labels == 1].index                      # 암 샘플의 인덱스 리스트
+        normal_idx = labels[labels == 0].index                      # 정상 샘플의 인덱스 리스트
+
+        # 클래스가 한쪽뿐이면 계산 불가
+        if len(cancer_idx) == 0 or len(normal_idx) == 0:
+            raise ValueError("labels.csv에 암세포(1)와 정상세포(0) 데이터가 모두 필요함.")
+
+        # 각 유전자의 암/정상 평균 발현 계산
+        mean_cancer = expr.loc[cancer_idx].mean(axis=0)             # series: 유전자별 암 평균
+        mean_normal = expr.loc[normal_idx].mean(axis=0)             # series: 유전자별 정상 평균
+
+        # LFC 계산
+        LFC = self._safe_log2(mean_cancer, self.eps) - self._safe_log2(mean_normal, self.eps)  # 유전자별 LFC
+        absLFC = np.abs(LFC)                                        # LFC 절댓값 (발현 변화의 크기)
+
+        # |LFC|의 표준화 -> Z_LFC (전체 유전자 분포의 평균/표준편차 사용)
+        mu_absLFC = np.nanmean(absLFC)                              # |LFC|의 평균
+        sigma_absLFC = np.nanstd(absLFC, ddof=0)                    # |LFC|의 표준편차
+        if np.isclose(sigma_absLFC, 0):
+            Z_LFC = pd.Series(np.zeros_like(absLFC), index=genes)   # 분산이 0이면 모두 0으로
+        else:
+            Z_LFC = (absLFC - mu_absLFC) / sigma_absLFC             # Z-표준화
+
+        # two-sample t-test (Welch's t-test; equal_var=False)
+        pvals = pd.Series(index=genes, dtype=float)                 # p-value를 저장할 Series
+        tstats = pd.Series(index=genes, dtype=float)                # t-statistics 저장
+        for g in genes:
+            x = expr.loc[cancer_idx, g].values                      # 암 샘플에서의 g 유전자 발현 배열
+            y = expr.loc[normal_idx, g].values                      # 정상 샘플에서의 g 유전자 발현 배열
+            try:
+                t, p = stats.ttest_ind(x, y, equal_var=False, nan_policy='omit')  # Welch's t-test
+            except Exception:
+                t, p = 0.0, 1.0                                    # 예외 발생 시 통계적으로 무의미하다고 처리
+            if np.isnan(p):
+                p = 1.0                                            # p가 NaN이면 1.0으로 대체 (유의하지 않음)
+            tstats[g] = t
+            pvals[g] = p
+
+        # p-value를 Z-score로 변환
+        pclip = np.clip(pvals.values.astype(float), 1e-300, 1.0)     # 너무 작은 값 방지
+        Z_p_vals = -norm.ppf(pclip / 2.0)                           # scipy.stats.norm.ppf: 역누적분포함수
+        Z_p_vals = np.nan_to_num(Z_p_vals, nan=0.0, posinf=0.0, neginf=0.0)       # 무한대/NaN 등이 있으면 0으로 대체
+        Z_p = pd.Series(Z_p_vals, index=genes)
+
+        # Diff* 계산
+        Diff_star = self.alpha_diff * Z_LFC + (1.0 - self.alpha_diff) * Z_p
+
+        # Diff*를 정규화하여 Diff(0~1) 계산
+        Diff = self._min_max_series(Diff_star)
+
+        # 암 샘플에서의 유전자별 MAD 계산 -> Rob
+        MAD_cancer = expr.loc[cancer_idx].apply(lambda col: self._median_abs_deviation(col.values), axis=0)
+        Rob = self._min_max_series(MAD_cancer)
+
+        # AUC 계산
+        y_true = labels.loc[expr.index].values                      # 샘플 순서에 맞춘 라벨 배열
+        AUCs = pd.Series(index=genes, dtype=float)                  # AUC 저장용
+        for g in genes:
+            vals = expr[g].values                                   # 유전자 g의 샘플별 발현값 배열
+            try:
+                # sklearn.metrics.roc_auc_score는 레이블이 0/1이어야 함
+                if len(np.unique(vals[~np.isnan(vals)])) < 2:
+                    AUCs[g] = 0.5                                  # 모든 값이 동일하면 분류 불가 -> AUC=0.5로 처리
+                else:
+                    AUCs[g] = roc_auc_score(y_true, vals)          # AUC 계산
+            except Exception:
+                AUCs[g] = 0.5                                      # 오류 발생 시 0.5로 대체
+
+        # AUC 범위 정규화
+        AUC_absprime = np.abs(2.0 * (AUCs - 0.5))
+
+        # 계산된 모든 지표를 DataFrame으로 묶어서 self.df_expr에 저장 (index = gene names)
+        self.df_expr = pd.DataFrame({
+            'LFC': LFC,
+            'absLFC': absLFC,
+            'Z_LFC': Z_LFC,
+            't_stat': tstats,
+            'pval': pvals,
+            'Z_p': Z_p,
+            'Diff_star': Diff_star,
+            'Diff': Diff,
+            'MAD_cancer': MAD_cancer,
+            'Rob': Rob,
+            'AUC': AUCs,
+            'AUC_absprime': AUC_absprime
+        })
+
+        # 결과 DataFrame 반환
+        return self.df_expr
+
+    # SCORE1 계산 (발현 기반 종합 점수)
+    def compute_score1(self):
+
+        b1, b2, b3 = self.beta_weights                     # beta 가중치를 언패킹
+
+        SCORE1_raw = b1 * self.df_expr['Diff'] + b2 * self.df_expr['Rob'] + b3 * self.df_expr['AUC_absprime']  # SCORE1 raw 계산 (정규화 전 가중합)
+
+        self.df_expr['SCORE1_raw'] = SCORE1_raw            # raw 값을 DataFrame에 저장
+
+        self.df_expr['SCORE1'] = self._min_max_series(SCORE1_raw)   # 0~1 정규화한 SCORE1 저장
+
+        return self.df_expr
+
+    # 네트워크 중심성 계산
+    def compute_network_scores(self):
+
+        # edges DataFrame과 유전자 목록을 편의 변수에 할당
+        edges = self.edges
+        gene_list = list(self.expr.columns)
+
+        # 그래프 객체 생성(무향 그래프로 가정)
+        G = nx.Graph()
+
+        # 엣지 리스트를 순회하면서 그래프에 추가 (source-target이 문자열로 취급되도록 변환)
+        for _, row in edges.iterrows():
+            s = str(row['source'])
+            t = str(row['target'])
+            if s == '' or t == '':                                 # 빈 값 예외 처리
+                continue
+            G.add_edge(s, t)                                       # 네트워크에 엣지 추가
+
+        # 유전자 리스트 안의 유전자들이 그래프에 존재하지 않으면 노드로 추가(고립 노드 허용)
+        for g in gene_list:
+            if g not in G:
+                G.add_node(g)                                     # 고립 노드로 추가
+
+        # 노드 총수 N 계산
+        N = G.number_of_nodes()
+
+        # degree 중심성 계산
+        if N <= 1:
+            deg_centrality = {n: 0.0 for n in G.nodes()}
+        else:
+            deg_centrality = {n: int(G.degree(n)) / float(N - 1) for n in G.nodes()}
+
+        # closeness 중심성 계산
+        closeness_centrality = nx.closeness_centrality(G)
+
+        # betweenness 중심성 계산
+        betweenness_centrality = nx.betweenness_centrality(G, normalized=True)
+
+        # eigenvector centrality 계산
+        try:
+            eigen_centrality = nx.eigenvector_centrality_numpy(G)  # 행렬분해 기반 계산
+        except Exception:
+            try:
+                eigen_centrality = nx.eigenvector_centrality(G, max_iter=200, tol=1e-06)  # power-iteration fallback
+            except Exception:
+                eigen_centrality = {n: 0.0 for n in G.nodes()}    # 모두 실패 시 0으로 대체
+
+        # DataFrame으로 모아서 gene_list 순서로 재정렬(없는 값은 0으로 채움)
+        df = pd.DataFrame({
+            'degree_node': pd.Series(deg_centrality),
+            'closeness': pd.Series(closeness_centrality),
+            'betweenness': pd.Series(betweenness_centrality),
+            'eigenvector': pd.Series(eigen_centrality)
+        }).reindex(gene_list).fillna(0.0)
+
+        # 각 중심성에 대해 0~1 min-max 정규화된 컬럼을 추가
+        df['degree_node_norm'] = self._min_max_series(df['degree_node'])
+        df['closeness_norm'] = self._min_max_series(df['closeness'])
+        df['betweenness_norm'] = self._min_max_series(df['betweenness'])
+        df['eigenvector_norm'] = self._min_max_series(df['eigenvector'])
+
+        # 내부 속성에 저장
+        self.df_net = df
+        return df
+
+    # SCORE2 계산 (네트워크 기반 종합 점수)
+    def compute_score2(self):
+
+        g1, g2, g3, g4 = self.gamma_weights                         # gamma 가중치 언패킹
+        s_raw = (g1 * self.df_net['degree_node_norm'] +
+                 g2 * self.df_net['closeness_norm'] +
+                 g3 * self.df_net['betweenness_norm'] +
+                 g4 * self.df_net['eigenvector_norm'])
+        self.df_net['SCORE2_raw'] = s_raw                           # 가중합 raw
+        self.df_net['SCORE2'] = self._min_max_series(s_raw)         # 0~1 정규화된 SCORE2
+        return self.df_net
+
+    # 최종 통합 및 출력
+    def compute_final_score(self, output_csv: str = "gene_scores_output.csv"):
+
+        # df_expr와 df_net을 유전자 인덱스로 병합 (left join으로 expr 기반 모든 유전자를 포함)
+        merged = self.df_expr.merge(
+            self.df_net[['degree_node', 'degree_node_norm', 'closeness', 'closeness_norm',
+                         'betweenness', 'betweenness_norm', 'eigenvector', 'eigenvector_norm',
+                         'SCORE2', 'SCORE2_raw']],
+            left_index=True, right_index=True, how='left').fillna(0.0)  # 네트워크에 없는 경우 0으로 채움
+
+        # omega 가중치 적용하여 raw 최종점수 계산
+        w1, w2 = self.omega_weights
+        merged['SCORE_final_raw'] = w1 * merged['SCORE1_raw'] + w2 * merged['SCORE2_raw']
+
+        # 0~1 정규화
+        merged['SCORE_final'] = self._min_max_series(merged['SCORE_final_raw'])
+
+        # SCORE_final을 기준으로 내림차순 정렬 (중요도 높은 유전자 상단)
+        merged = merged.sort_values('SCORE_final', ascending=False)
+
+        # CSV로 저장
+        merged.to_csv(output_csv)
+
+        # 내부 속성에 저장
+        self.result = merged
+
+        # 결과 반환
+        return merged
+
+    # 전체 실행용
+    def run_pipeline(self, expression_csv: str, labels_csv: str, edges_csv: str, output_csv: str = "gene_scores_output.csv"):
+
+        # 데이터 로드
+        self.load_data(expression_csv, labels_csv, edges_csv)
+        # 발현 기반 지표 계산
+        self.compute_expression_scores()
+        # SCORE1 계산
+        self.compute_score1()
+        # 네트워크 중심성 계산
+        self.compute_network_scores()
+        # SCORE2 계산
+        self.compute_score2()
+        # 최종 통합 및 CSV 출력
+        return self.compute_final_score(output_csv)
+
