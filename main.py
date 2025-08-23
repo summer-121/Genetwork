@@ -1,0 +1,87 @@
+
+from Bio import Entrez
+from library import ncbi_access
+from library import Importance
+import pandas as pd
+
+email = "1018jjkk@gmail.com" # 이메일 주소(사용자 걸로)
+Entrez.email = email
+
+# 유전자, 종 정보 입력란
+Gene_name = "p53"  # 다른 유전자로 바꾸면 동작 가능 (예: "recA", "lexA", "lacZ")
+Organism = "Homo sapiens"  # 다른 유기체로 바꾸면 동작 가능 (예: "Salmonella enterica")
+
+
+ncbi_access(Gene_name, Organism)
+
+
+# 원본 튜플 데이터
+labels = (1, 0, 1, 0)
+Gene1  = (6.6, 3.2, 5.6, 2.8)
+Gene2  = (2.2, 3.3, 3.0, 2.9)
+Gene3  = (3.3, 3.2, 3.1, 3.2)
+Gene4  = (1.0, 4.0, 1.2, 3.8)
+Gene5 = (0.0, 3.0, 1.0, 3.0)
+edges_tuples = [
+    ('Gene1', 'Gene5'),
+    ('Gene5', 'Gene4'),
+    ('Gene2', 'Gene5'),
+    ('Gene1', 'Gene4'),
+    ('Gene2', 'Gene1'),
+    ('Gene2', 'Gene3')
+]
+
+# 샘플 ID 생성 (S1, S2, S3, S4 ...)
+samples = [f"S{i+1}" for i in range(len(labels))]
+
+# expr_df 생성 (샘플 x 유전자)
+expr_df = pd.DataFrame({
+    "GENE1": Gene1,
+    "GENE2": Gene2,
+    "GENE3": Gene3,
+    "GENE4": Gene4,
+    "GENE5": Gene5
+}, index=samples)
+
+# labels_df 생성 (sample, label)
+labels_df = pd.DataFrame({
+    "sample": samples,
+    "label": labels
+})
+
+# edges_df 생성
+edges_df = pd.DataFrame(edges_tuples, columns=["source", "target"])
+
+print("expr_df:")
+print(expr_df, "\n")
+print("labels_df:")
+print(labels_df, "\n")
+print("edges_df:")
+print(edges_df)
+
+# 1. Importance 인스턴스 생성
+imp = Importance(
+    alpha_diff=0.5,                       # LFC vs p-value 비중 (Diff* 계산 시)
+    beta_weights=(0.5, 0.2, 0.3),         # SCORE1 가중치 (Diff, Rob, AUC)
+    gamma_weights=(0.25, 0.25, 0.25, 0.25), # SCORE2 가중치 (degree, closeness, betweenness, eigen)
+    omega_weights=(0.7, 0.3),             # 최종 SCORE 가중치 (SCORE1 vs SCORE2)
+    eps=1e-6                              # log 계산 시 작은 상수
+)
+
+# 2. DataFrame 직접 로딩 (CSV 대신)
+imp.load_data_from_df(expr_df, labels_df, edges_df)
+
+# 3. 발현 기반 지표 계산
+imp.compute_expression_scores()
+imp.compute_score1()
+
+# 4. 네트워크 중심성 계산
+imp.compute_network_scores()
+imp.compute_score2()
+
+# 5. 최종 점수 계산 및 결과 DataFrame 생성
+result_df = imp.compute_final_score(output_csv="gene_scores_output.csv")
+
+# 6. 상위 10개 결과 출력
+print("상위 10개 유전자 중요도:")
+print(result_df[['SCORE_final', 'SCORE1', 'SCORE2']].head(10))
