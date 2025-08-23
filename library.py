@@ -2,14 +2,12 @@
 from Bio import Entrez
 import numpy as np
 import pandas as pd
+from pandas.core.interchange.dataframe_protocol import DataFrame
 from scipy import stats
 from scipy.stats import norm
 from sklearn.metrics import roc_auc_score
 import networkx as nx
-import argparse
-import sys
 # import math  #이건 나중에 필요하게 되면 활성화할 예정
-import warnings
 
 # 1. Data_Access: 데이터베이스 접근용
 
@@ -38,7 +36,6 @@ def ncbi_access(gene_name: str, organism: str):
         print("Chromosome:", gene_info['Chromosome'])
         print("Map Location:", gene_info['MapLocation'])
         print("Summary:", gene_info['Summary'])
-
 
 
 
@@ -86,33 +83,33 @@ class Importance:
         med: float = float(np.nanmedian(arr))                      # 중앙값 계산
         return float(np.nanmedian(np.abs(arr - med)))              # 중앙값으로부터의 절대편차들 중앙값 반환
 
-    def load_data(self, expression_csv: str, labels_csv: str, edges_csv: str):
+    def load_data_from_df(self, expr_df: pd.DataFrame, labels_df: pd.DataFrame, edges_df: pd.DataFrame):
         """
-        세 파일을 읽어들여 내부 속성에 저장.
-        - expression_csv: samples x genes (index=sample IDs)
-        - labels_csv: columns ['sample','label'] (sample은 expression의 인덱스와 일치) --> 라벨에서 1은 암세포 데이터, 0은 정상세포 데이터
-        - edges_csv: columns at least ['source','target']
-        결국 전처리 알고리즘에서 여기 있는 3개 csv를 만들어내야 함!! 아니면 데이터프레임 형태로 가져와도 되긴 함. 전처리 알고리즘 별도 제작 필요
+        DataFrame을 내부 속성(self.expr, self.labels, self.edges)에 저장
+
+        expr_df : pd.DataFrame
+            샘플 x 유전자 발현량 DataFrame. index = sample, columns = genes.
+        labels_df : pd.DataFrame
+            sample, label 두 컬럼을 가져야 함. label은 0(정상), 1(암).
+        edges_df : pd.DataFrame
+            최소 ['source','target'] 컬럼을 포함하는 네트워크 엣지 리스트.
         """
-        # expression 파일 읽기: 첫 열을 인덱스로 사용
-        self.expr = pd.read_csv(expression_csv, index_col=0)       # CSV 파일을 읽어 DataFrame으로 저장 (샘플이 index)
-        # labels 파일 읽기: sample을 인덱스로 하여 Series로 변환
-        labels_df = pd.read_csv(labels_csv)                        # labels CSV 읽기 (index 지정 전)
-        if 'sample' not in labels_df.columns or 'label' not in labels_df.columns:
-            raise ValueError("labels.csv는 'sample'과 'label' 컬럼을 포함해야 함.")  # 포맷 체크
-        labels_df = labels_df.set_index('sample')                  # 'sample' 칼럼을 인덱스로 설정
-        self.labels = labels_df['label'].reindex(self.expr.index)  # expression의 샘플 순서에 맞게 재배열
+        # expr_df 저장 (샘플 x 유전자 매트릭스)
+        self.expr = expr_df.apply(pd.to_numeric, errors='coerce')  # 숫자형으로 변환
+
+        # labels_df에서 라벨 시리즈 추출
+        if not {'sample', 'label'}.issubset(labels_df.columns):
+            raise ValueError("labels_df의 컬럼 결점 발생")
+        self.labels = labels_df.set_index('sample')['label'].reindex(self.expr.index)
+
         if self.labels.isnull().any():
             missing = self.labels[self.labels.isnull()].index.tolist()
-            raise ValueError(f"expression.csv의 일부 샘플이 labels.csv에 없음: {missing}")  # 매칭 실패 시 예외
+            raise ValueError(f"라벨이 없는 샘플이 존재함: {missing}")
 
-        # edges 파일 읽기
-        self.edges = pd.read_csv(edges_csv)                        # 네트워크 엣지 리스트 읽기
-        if 'source' not in self.edges.columns or 'target' not in self.edges.columns:
-            raise ValueError("network_edges.csv는 'source'와 'target' 컬럼을 포함해야 함.")  # 포맷 체크
-
-        # expression 값의 타입을 숫자로 강제 변환 (문자열 등으로 인해 생긴 문제 방지)
-        self.expr = self.expr.apply(pd.to_numeric, errors='coerce')  # 변환 불가 항목은 NaN으로 처리
+        # edges_df 저장
+        if not {'source', 'target'}.issubset(edges_df.columns):
+            raise ValueError("edges_df의 컬럼 결점 발생")
+        self.edges = edges_df.copy()
 
     # 발현 기반 점수 계산
     def compute_expression_scores(self):
@@ -333,10 +330,10 @@ class Importance:
         return merged
 
     # 전체 실행용
-    def run_pipeline(self, expression_csv: str, labels_csv: str, edges_csv: str, output_csv: str = "gene_scores_output.csv"):
+    def run_pipeline(self, expr_df: DataFrame, labels_df: DataFrame, edges_df: DataFrame, output_csv: str = "gene_scores_output.csv"):
 
         # 데이터 로드
-        self.load_data(expression_csv, labels_csv, edges_csv)
+        self.load_data_from_df(expr_df, labels_df, edges_df)
         # 발현 기반 지표 계산
         self.compute_expression_scores()
         # SCORE1 계산
