@@ -14,33 +14,53 @@ import networkx as nx                                                  # 네트�
 
 # 1. Data_Access: 데이터베이스 접근용
 
-# 1-1. NCBI에서 정보 가져오는 함수
-def ncbi_access(gene_name: str, organism: str):
+class Data:
+    # 클래스 생성자
+    def __init__(self, email):
 
-        # 1. NCBI Search Query 생성 및 검색
-        search_query = f"{gene_name}[Gene Name] AND {organism}[Organism]"
-        handle = Entrez.esearch(db="gene", term=search_query)
+        self.email = email
+        Entrez.email = self.email
+
+    # 유전자 정보 요약 가져오기
+    def gene_summary(self, gene_name: str, organism: str):
+        try:
+            # 1. 유전자 검색
+            search_term = f"{gene_name}[Gene Name] AND {organism}[Organism]"
+            handle = Entrez.esearch(db="gene", term=search_term)
+            record = Entrez.read(handle)
+            handle.close()
+
+            if not record["IdList"]:
+                print(f"'{gene_name}' 유전자 검색 결과 없음.")
+                return
+
+            gene_id = record["IdList"][0]
+            print(f"Found Gene ID for {gene_name}: {gene_id}")
+
+            # 2. 유전자 요약 정보 가져오기
+            handle = Entrez.esummary(db="gene", id=gene_id)
+            summary = Entrez.read(handle)
+            handle.close()
+
+            gene_info = summary['DocumentSummarySet']['DocumentSummary'][0]
+
+            print("\n유전자 요약 정보:")
+            print(f"Gene Symbol: {gene_info['NomenclatureSymbol']}")
+            print(f"Description: {gene_info['Description']}")
+            print(f"Chromosome: {gene_info['Chromosome']}")
+            print(f"Map Location: {gene_info['MapLocation']}")
+            print(f"Summary: {gene_info['Summary']}")
+
+        except Exception as e:
+            print(f"오류 발생: {e}")
+
+    # PubMed 기반 논문 수 찾아오기
+    def search_pubmed(self, gene_name):
+
+        handle = Entrez.esearch(db="pubmed", term=gene_name, retmode="xml")
         record = Entrez.read(handle)
         handle.close()
-
-        # 2. 검색 결과에서 첫 번째 Gene ID 가져오기
-        gene_id = record["IdList"][0]
-        print(f"Gene ID: {gene_id}")
-
-        # 3. 유전자 요약 정보 가져오기
-        handle = Entrez.esummary(db="gene", id=gene_id)
-        summary = Entrez.read(handle)
-        handle.close()
-
-        # 4. 요약 내용 출력
-        gene_info = summary['DocumentSummarySet']['DocumentSummary'][0]
-        print("Gene Symbol:", gene_info['NomenclatureSymbol'])
-        print("Description:", gene_info['Description'])
-        print("Chromosome:", gene_info['Chromosome'])
-        print("Map Location:", gene_info['MapLocation'])
-        print("Summary:", gene_info['Summary'])
-
-
+        return int(record["Count"])
 
 # 2. Importance: 중요도 계산 코드
 
