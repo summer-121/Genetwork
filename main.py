@@ -4,12 +4,18 @@ from library import ncbi_access
 from library import Importance
 import pandas as pd
 
+# 출력 옵션 변경 (행, 열 모두 제한 해제)
+pd.set_option("display.max_rows", None)   # 모든 행 출력
+pd.set_option("display.max_columns", None) # 모든 열 출력
+pd.set_option("display.width", None)      # 줄바꿈 없이 한 줄에 표시
+pd.set_option("display.max_colwidth", None) # 컬럼 내 문자열 길이 제한 해제
+
 email = "1018jjkk@gmail.com" # 이메일 주소(사용자 걸로)
 Entrez.email = email
 
 # 유전자, 종 정보 입력란
-Gene_name = "p53"  # 다른 유전자로 바꾸면 동작 가능 (예: "recA", "lexA", "lacZ")
-Organism = "Homo sapiens"  # 다른 유기체로 바꾸면 동작 가능 (예: "Salmonella enterica")
+Gene_name = "p53"  # 다른 유전자로 바꾸면 동작 가능
+Organism = "Homo sapiens"  # 다른 유기체로 바꾸면 동작 가능
 
 
 ncbi_access(Gene_name, Organism)
@@ -36,11 +42,11 @@ samples = [f"S{i+1}" for i in range(len(labels))]
 
 # expr_df 생성 (샘플 x 유전자)
 expr_df = pd.DataFrame({
-    "GENE1": Gene1,
-    "GENE2": Gene2,
-    "GENE3": Gene3,
-    "GENE4": Gene4,
-    "GENE5": Gene5
+    "Gene1": Gene1,
+    "Gene2": Gene2,
+    "Gene3": Gene3,
+    "Gene4": Gene4,
+    "Gene5": Gene5
 }, index=samples)
 
 # labels_df 생성 (sample, label)
@@ -85,3 +91,7 @@ result_df = imp.compute_final_score(output_csv="gene_scores_output.csv")
 # 6. 상위 10개 결과 출력
 print("상위 10개 유전자 중요도:")
 print(result_df[['SCORE_final', 'SCORE1', 'SCORE2']].head(10))
+
+# 7. 구체적인 부분점수 확인 (구체적인 정보가 필요할 경우 이 함수를 켜서 제공)
+all_results = imp.all_results()
+print(all_results)
