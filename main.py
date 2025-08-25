@@ -1,6 +1,5 @@
 
-from Bio import Entrez
-from library import ncbi_access
+from library import Data
 from library import Importance
 import pandas as pd
 
@@ -10,15 +9,19 @@ pd.set_option("display.max_columns", None) # 모든 열 출력
 pd.set_option("display.width", None)      # 줄바꿈 없이 한 줄에 표시
 pd.set_option("display.max_colwidth", None) # 컬럼 내 문자열 길이 제한 해제
 
-email = "1018jjkk@gmail.com" # 이메일 주소(사용자 걸로)
-Entrez.email = email
 
-# 유전자, 종 정보 입력란
-Gene_name = "p53"  # 다른 유전자로 바꾸면 동작 가능
-Organism = "Homo sapiens"  # 다른 유기체로 바꾸면 동작 가능
+# 이메일
+email = "1018jjkk@gmail.com"
+data = Data(email)
 
+# 찾는 유전자, 종 이름
+gene = "p53"
+org = "Homo sapiens"
 
-ncbi_access(Gene_name, Organism)
+data.gene_summary(gene, org)
+
+pubmed_count = data.search_pubmed("UvrA")
+print(f"PubMed 논문 수: {pubmed_count}")
 
 
 # 원본 튜플 데이터
@@ -37,7 +40,7 @@ edges_tuples = [
     ('Gene2', 'Gene3')
 ]
 
-# 샘플 ID 생성 (S1, S2, S3, S4 ...)
+# 샘플 ID 생성
 samples = [f"S{i+1}" for i in range(len(labels))]
 
 # expr_df 생성 (샘플 x 유전자)
@@ -58,12 +61,6 @@ labels_df = pd.DataFrame({
 # edges_df 생성
 edges_df = pd.DataFrame(edges_tuples, columns=["source", "target"])
 
-print("expr_df:")
-print(expr_df, "\n")
-print("labels_df:")
-print(labels_df, "\n")
-print("edges_df:")
-print(edges_df)
 
 # 1. Importance 인스턴스 생성
 imp = Importance(
@@ -74,7 +71,7 @@ imp = Importance(
     eps=1e-6                              # log 계산 시 작은 상수
 )
 
-# 2. DataFrame 직접 로딩 (CSV 대신)
+# 2. DataFrame 직접 로딩
 imp.load_data_from_df(expr_df, labels_df, edges_df)
 
 # 3. 발현 기반 지표 계산
