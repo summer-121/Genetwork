@@ -1,13 +1,16 @@
+# 구동 버전: 3.10.18
+
+
 # 외부 라이브러리 모음집
-from Bio import Entrez
-import numpy as np
-import pandas as pd
-from pandas.core.interchange.dataframe_protocol import DataFrame
-from scipy import stats
-from scipy.stats import norm
-from sklearn.metrics import roc_auc_score
-import networkx as nx
-# import math  #이건 나중에 필요하게 되면 활성화할 예정
+from Bio import Entrez                                                 # NCBI 접근용
+import numpy as np                                                     #  넘버링 관련
+import pandas as pd                                                    # 각종 툴이 잔뜩 들어있음. 분석 관련해서 가장 중요한 라이브러리
+from pandas.core.interchange.dataframe_protocol import DataFrame       # 데이터프레임 형성
+from scipy import stats                                                # 통계 모델
+from scipy.stats import norm                                           # 정규분포 모델
+from sklearn.metrics import roc_auc_score                              # ROC-AUC 계산
+import networkx as nx                                                  # 네트워크 분석 모델
+# import math                                                          # 이건 나중에 필요하게 되면 활성화할 예정. 수학적 계산 모델 일부 포함
 
 # 1. Data_Access: 데이터베이스 접근용
 
@@ -345,3 +348,22 @@ class Importance:
         # 최종 통합 및 CSV 출력
         return self.compute_final_score(output_csv)
 
+    # 부분점수 확인 (구체적인 정보가 필요할 경우 이 함수를 켜서 제공)
+    def all_results(self) -> pd.DataFrame:
+        if self.df_expr is None or self.df_net is None or self.result is None:
+            raise ValueError("먼저 파이프라인을 실행하거나 compute_* 메서드를 모두 호출해야 합니다.")
+
+        # SCORE1 부분 점수
+        score1_parts = self.df_expr[['Diff', 'Rob', 'AUC_absprime', 'SCORE1']]
+
+        # SCORE2 부분 점수
+        score2_parts = self.df_net[['degree_node_norm', 'closeness_norm',
+                                    'betweenness_norm', 'eigenvector_norm', 'SCORE2']]
+
+        # 최종 점수
+        final_score = self.result[['SCORE_final']]
+
+        # 모두 병합
+        merged = score1_parts.join(score2_parts, how='outer').join(final_score, how='outer')
+
+        return merged
