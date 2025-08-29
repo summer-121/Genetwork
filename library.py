@@ -11,6 +11,12 @@ from scipy.stats import norm                                           # 정규�
 from sklearn.metrics import roc_auc_score                              # ROC-AUC 계산
 import networkx as nx                                                  # 네트워크 분석 모델
 # import math                                                          # 이건 나중에 필요하게 되면 활성화할 예정. 수학적 계산 모델 일부 포함
+import time
+from collections import defaultdict
+import matplotlib.pyplot as plt
+from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import PolynomialFeatures
+from statsmodels.tsa.arima.model import ARIMA
 
 # 1. Data_Access: 데이터베이스 접근용
 
@@ -387,3 +393,155 @@ class Importance:
         merged = score1_parts.join(score2_parts, how='outer').join(final_score, how='outer')
 
         return merged
+
+# 3-1. 트렌드 분석: 펍메드 논문 수 함수화
+
+class Pub_Analysis:
+    def __init__(self, email: str, api_key: str = None):
+        """
+        PubMed 분석 클래스 초기화
+        :param email: NCBI Entrez API 사용 시 필요한 이메일
+        :param api_key: 선택적으로 NCBI API key 제공 가능 (속도 향상)
+        """
+        Entrez.email = email
+        if api_key:
+            Entrez.api_key = api_key
+
+    def _search_pubmed(self, keyword: str, year: int) -> int:
+        """
+        내부용 함수: 특정 키워드와 연도를 기반으로 PubMed 검색 후 논문 수 반환
+        """
+        query = f"{keyword} AND ({year}[PDAT])"
+        handle = Entrez.esearch(db="pubmed", term=query, datetype="pdat")
+        record = Entrez.read(handle)
+        handle.close()
+        return int(record["Count"])
+
+    def _fetch_yearly_counts(self, keyword: str, start_year: int, end_year: int) -> dict:
+        """
+        내부용 함수: 특정 키워드에 대한 연도별 논문 수를 가져옴
+        """
+        yearly_counts = defaultdict(int)
+        for year in range(start_year, end_year + 1):
+            try:
+                count = self._search_pubmed(keyword, year)
+                yearly_counts[year] = count
+                time.sleep(0.34)  # API 호출 제한 준수 (초당 3회)
+            except Exception as e:
+                print(f"Error in year {year}: {e}")
+        return dict(yearly_counts)
+
+    def get_yearly_publications(self, keyword: str, start_year: int, end_year: int) -> dict:
+        """
+        외부 제공 함수 (최종 함수화된 인터페이스)
+        특정 키워드에 대한 연도별 논문 수를 가져와 dict로 반환
+        :param keyword: 검색 키워드
+        :param start_year: 시작 연도
+        :param end_year: 종료 연도
+        :return: {연도: 논문 수} dict
+        """
+        return self._fetch_yearly_counts(keyword, start_year, end_year)
+
+# 3-2. 트렌드 분석: 향후 5년 출판 논문 수 예측
+
+class Trend:
+    def __init__(self, data: dict, degree: int = 2):
+        """
+        Trend 분석 클래스
+        :param data: {연도: 논문 수} 형태의 dict
+        :param degree: 다항 회귀 차수
+        """
+        self.df = pd.DataFrame(list(data.items()), columns=["year", "count"])
+        self.df.sort_values("year", inplace=True)
+        self.degree = degree
+        self.poly = PolynomialFeatures(degree=self.degree)
+
+        # 모델 보관
+        self.poly_model = None
+        self.arima_model = None
+
+    # ----------------------
+    # 다항 회귀
+    # ----------------------
+    def fit_polynomial(self):
+        X = self.df[["year"]].values
+        y = self.df["count"].values
+        X_poly = self.poly.fit_transform(X)
+        self.poly_model = LinearRegression()
+        self.poly_model.fit(X_poly, y)
+
+    def predict_polynomial(self, future_years: int = 5) -> pd.DataFrame:
+        if self.poly_model is None:
+            raise RuntimeError("Polynomial 모델이 학습되지 않았습니다.")
+
+        last_year = self.df["year"].max()
+        future_years_list = np.arange(last_year + 1, last_year + future_years + 1).reshape(-1, 1)
+        future_poly = self.poly.transform(future_years_list)
+        preds = self.poly_model.predict(future_poly)
+
+        return pd.DataFrame({
+            "year": future_years_list.flatten(),
+            "poly_pred": preds
+        })
+
+    # ----------------------
+    # ARIMA
+    # ----------------------
+    def fit_arima(self, order=(2,1,2)):
+        y = self.df["count"].values
+        self.arima_model = ARIMA(y, order=order)
+        self.arima_model = self.arima_model.fit()
+
+    def predict_arima(self, future_years: int = 5) -> pd.DataFrame:
+        if self.arima_model is None:
+            raise RuntimeError("ARIMA 모델이 학습되지 않았습니다.")
+
+        steps = future_years
+        preds = self.arima_model.forecast(steps=steps)
+
+        last_year = self.df["year"].max()
+        future_years_list = np.arange(last_year + 1, last_year + steps + 1)
+
+        return pd.DataFrame({
+            "year": future_years_list,
+            "arima_pred": preds
+        })
+
+    # ----------------------
+    # Ensemble (가중 평균)
+    # ----------------------
+    def ensemble_predictions(self, poly_future: pd.DataFrame, arima_future: pd.DataFrame,
+                             w_poly: float = 0.3, w_arima: float = 0.7) -> pd.DataFrame:
+        """
+        Polynomial + ARIMA 가중 평균 결합
+        """
+        merged = pd.merge(poly_future, arima_future, on="year")
+        merged["ensemble_pred"] = merged["poly_pred"] * w_poly + merged["arima_pred"] * w_arima
+        return merged
+
+    # ----------------------
+    # 시각화
+    # ----------------------
+    def plot_comparison(self, poly_future: pd.DataFrame, arima_future: pd.DataFrame, ensemble_future: pd.DataFrame):
+        plt.figure(figsize=(9, 6))
+
+        # 실제 데이터
+        plt.plot(self.df["year"], self.df["count"], marker="o", color="blue", label="Historical Data")
+
+        # Polynomial 결과
+        plt.plot(poly_future["year"], poly_future["poly_pred"], "g--", marker="x", label=f"Polynomial (deg={self.degree})")
+
+        # ARIMA 결과
+        plt.plot(arima_future["year"], arima_future["arima_pred"], "r--", marker="s", label="ARIMA")
+
+        # Ensemble 결과
+        plt.plot(ensemble_future["year"], ensemble_future["ensemble_pred"], "k-", marker="d", linewidth=2,
+                 label="Ensemble (0.3 Poly + 0.7 ARIMA)")
+
+        plt.xlabel("Year")
+        plt.ylabel("Number of Publications")
+        plt.title("Publication Trend: Polynomial vs ARIMA vs Ensemble")
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
