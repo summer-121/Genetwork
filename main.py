@@ -1,6 +1,8 @@
 
 from library import Data
 from library import Importance
+from library import Pub_Analysis
+from library import Trend
 import pandas as pd
 
 # 출력 옵션 변경 (행, 열 모두 제한 해제)
@@ -24,7 +26,7 @@ pubmed_count = data.search_pubmed("UvrA")
 print(f"PubMed 논문 수: {pubmed_count}")
 
 
-# 원본 튜플 데이터
+# 원본 튜플 데이터 (이제 이걸 raw data에서 가져오는 방법을 모색해야 함)
 labels = (1, 0, 1, 0)
 Gene1  = (6.6, 3.2, 5.6, 2.8)
 Gene2  = (2.2, 3.3, 3.0, 2.9)
@@ -92,3 +94,33 @@ print(result_df[['SCORE_final', 'SCORE1', 'SCORE2']].head(10))
 # 7. 구체적인 부분점수 확인 (구체적인 정보가 필요할 경우 이 함수를 켜서 제공)
 all_results = imp.all_results()
 print(all_results)
+
+# Step 1: PubMed 데이터 수집 (p53 유전자)
+analyzer = Pub_Analysis(email)
+yearly_data = analyzer.get_yearly_publications(gene, 2000, 2025)
+print("연도별 논문 수:", yearly_data)
+
+# Step 2: 트렌드 분석
+trend = Trend(yearly_data, degree=3)
+
+# Polynomial
+trend.fit_polynomial()
+poly_future = trend.predict_polynomial(future_years=5)
+
+# ARIMA
+trend.fit_arima(order=(2,1,2))
+arima_future = trend.predict_arima(future_years=5)
+
+# Ensemble
+ensemble_future = trend.ensemble_predictions(poly_future, arima_future, w_poly=0.3, w_arima=0.7)
+
+# 결과 출력
+print("\nPolynomial 예측 결과:")
+print(poly_future)
+print("\nARIMA 예측 결과:")
+print(arima_future)
+print("\nEnsemble 예측 결과 (0.3 Poly + 0.7 ARIMA):")
+print(ensemble_future)
+
+# 시각화
+trend.plot_comparison(poly_future, arima_future, ensemble_future)
