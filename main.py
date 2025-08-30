@@ -64,7 +64,7 @@ labels_df = pd.DataFrame({
 edges_df = pd.DataFrame(edges_tuples, columns=["source", "target"])
 
 
-# 1. Importance 인스턴스 생성
+# Importance 인스턴스 생성
 imp = Importance(
     alpha_diff=0.5,                       # LFC vs p-value 비중 (Diff* 계산 시)
     beta_weights=(0.5, 0.2, 0.3),         # SCORE1 가중치 (Diff, Rob, AUC)
@@ -73,45 +73,42 @@ imp = Importance(
     eps=1e-6                              # log 계산 시 작은 상수
 )
 
-# 2. DataFrame 직접 로딩
+# DataFrame 직접 로딩
 imp.load_data_from_df(expr_df, labels_df, edges_df)
 
-# 3. 발현 기반 지표 계산
+# 발현 기반 지표 계산
 imp.compute_expression_scores()
 imp.compute_score1()
 
-# 4. 네트워크 중심성 계산
+# 네트워크 중심성 계산
 imp.compute_network_scores()
 imp.compute_score2()
 
-# 5. 최종 점수 계산 및 결과 DataFrame 생성
+# 최종 점수 계산 및 결과 DataFrame 생성
 result_df = imp.compute_final_score(output_csv="gene_scores_output.csv")
 
-# 6. 상위 10개 결과 출력
+# 상위 10개 결과 출력
 print("상위 10개 유전자 중요도:")
 print(result_df[['SCORE_final', 'SCORE1', 'SCORE2']].head(10))
 
-# 7. 구체적인 부분점수 확인 (구체적인 정보가 필요할 경우 이 함수를 켜서 제공)
+# 구체적인 부분점수 확인 (구체적인 정보가 필요할 경우 이 함수를 켜서 제공)
 all_results = imp.all_results()
 print(all_results)
 
-# Step 1: PubMed 데이터 수집 (p53 유전자)
+# 유전자 이름을 query로 한 PubMed 데이터 수집
 analyzer = Pub_Analysis(email)
-yearly_data = analyzer.get_yearly_publications(gene, 2000, 2025)
+yearly_data = analyzer.get_yearly_publications(gene, 2018, 2025)
 print("연도별 논문 수:", yearly_data)
 
-# Step 2: 트렌드 분석
+# 트렌드 분석 진행
 trend = Trend(yearly_data, degree=3)
 
-# Polynomial
 trend.fit_polynomial()
 poly_future = trend.predict_polynomial(future_years=5)
 
-# ARIMA
 trend.fit_arima(order=(2,1,2))
 arima_future = trend.predict_arima(future_years=5)
 
-# Ensemble
 ensemble_future = trend.ensemble_predictions(poly_future, arima_future, w_poly=0.3, w_arima=0.7)
 
 # 결과 출력
