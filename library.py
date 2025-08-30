@@ -11,12 +11,12 @@ from scipy.stats import norm                                           # 정규�
 from sklearn.metrics import roc_auc_score                              # ROC-AUC 계산
 import networkx as nx                                                  # 네트워크 분석 모델
 # import math                                                          # 이건 나중에 필요하게 되면 활성화할 예정. 수학적 계산 모델 일부 포함
-import time
-from collections import defaultdict
-import matplotlib.pyplot as plt
-from sklearn.linear_model import LinearRegression
-from sklearn.preprocessing import PolynomialFeatures
-from statsmodels.tsa.arima.model import ARIMA
+import time                                                            # 시간별 분석에 필요한 거
+from collections import defaultdict                                    # 정보 모아서 dictionary화
+import matplotlib.pyplot as plt                                        # 그래프 만드는 툴
+from sklearn.linear_model import LinearRegression                      # 선형회귀 모델
+from sklearn.preprocessing import PolynomialFeatures                   # 선형회귀 기반 다항회귀 모델
+from statsmodels.tsa.arima.model import ARIMA                          # 통계 툴, ARIMA 모델
 
 # 1. Data_Access: 데이터베이스 접근용
 
@@ -376,6 +376,7 @@ class Importance:
 
     # 부분점수 확인 (구체적인 정보가 필요할 경우 이 함수를 켜서 제공)
     def all_results(self) -> pd.DataFrame:
+
         if self.df_expr is None or self.df_net is None or self.result is None:
             raise ValueError("먼저 파이프라인을 실행하거나 compute_* 메서드를 모두 호출해야 합니다.")
 
@@ -397,60 +398,45 @@ class Importance:
 # 3-1. 트렌드 분석: 펍메드 논문 수 함수화
 
 class Pub_Analysis:
+    # 클래스 생성자
     def __init__(self, email: str, api_key: str = None):
-        """
-        PubMed 분석 클래스 초기화
-        :param email: NCBI Entrez API 사용 시 필요한 이메일
-        :param api_key: 선택적으로 NCBI API key 제공 가능 (속도 향상)
-        """
         Entrez.email = email
         if api_key:
             Entrez.api_key = api_key
 
+    # PubMed에서 특정 년도의 유전자 이름을 가지는 논문 수 카운트 (현재는 모든 publication을 기반으로 하기 때문에 PubMed의 차트보다 수가 커 보일 수 있음)
     def _search_pubmed(self, keyword: str, year: int) -> int:
-        """
-        내부용 함수: 특정 키워드와 연도를 기반으로 PubMed 검색 후 논문 수 반환
-        """
-        query = f"{keyword} AND ({year}[PDAT])"
-        handle = Entrez.esearch(db="pubmed", term=query, datetype="pdat")
-        record = Entrez.read(handle)
-        handle.close()
-        return int(record["Count"])
 
+        query = f"\"{keyword}\"[tiab] AND {year}[PDAT]"                                                            # search query
+        handle = Entrez.esearch(db="pubmed", term=query, datetype="pdat", rettype = "count", retmode="xml")        # 펍메드 검색 조건, 검색 진행
+        record = Entrez.read(handle)                                                                               # 검색 결과 불러오기
+        handle.close()
+        return int(record["Count"])                                                                                # 논문 수 결과값으로 반환
+
+    # 연도별 논문 수 만드는 함수
     def _fetch_yearly_counts(self, keyword: str, start_year: int, end_year: int) -> dict:
-        """
-        내부용 함수: 특정 키워드에 대한 연도별 논문 수를 가져옴
-        """
+
         yearly_counts = defaultdict(int)
-        for year in range(start_year, end_year + 1):
+        for year in range(start_year, end_year + 1):                                                # start year부터 end year까지 반복문으로 연도별 논문 수 확인
             try:
                 count = self._search_pubmed(keyword, year)
                 yearly_counts[year] = count
                 time.sleep(0.34)  # API 호출 제한 준수 (초당 3회)
             except Exception as e:
                 print(f"Error in year {year}: {e}")
-        return dict(yearly_counts)
+        return dict(yearly_counts)                                                                  # 벡터 형태로 결과 반환
 
+    # 실행용 파이프라인이라고 생각하면 됨
     def get_yearly_publications(self, keyword: str, start_year: int, end_year: int) -> dict:
-        """
-        외부 제공 함수 (최종 함수화된 인터페이스)
-        특정 키워드에 대한 연도별 논문 수를 가져와 dict로 반환
-        :param keyword: 검색 키워드
-        :param start_year: 시작 연도
-        :param end_year: 종료 연도
-        :return: {연도: 논문 수} dict
-        """
+
         return self._fetch_yearly_counts(keyword, start_year, end_year)
 
 # 3-2. 트렌드 분석: 향후 5년 출판 논문 수 예측
 
 class Trend:
+    # 클래스 생성자
     def __init__(self, data: dict, degree: int = 2):
-        """
-        Trend 분석 클래스
-        :param data: {연도: 논문 수} 형태의 dict
-        :param degree: 다항 회귀 차수
-        """
+
         self.df = pd.DataFrame(list(data.items()), columns=["year", "count"])
         self.df.sort_values("year", inplace=True)
         self.degree = degree
@@ -460,17 +446,18 @@ class Trend:
         self.poly_model = None
         self.arima_model = None
 
-    # ----------------------
     # 다항 회귀
-    # ----------------------
     def fit_polynomial(self):
+
         X = self.df[["year"]].values
         y = self.df["count"].values
         X_poly = self.poly.fit_transform(X)
         self.poly_model = LinearRegression()
         self.poly_model.fit(X_poly, y)
 
+    # 다항회귀 기반 예측
     def predict_polynomial(self, future_years: int = 5) -> pd.DataFrame:
+
         if self.poly_model is None:
             raise RuntimeError("Polynomial 모델이 학습되지 않았습니다.")
 
@@ -479,20 +466,24 @@ class Trend:
         future_poly = self.poly.transform(future_years_list)
         preds = self.poly_model.predict(future_poly)
 
-        return pd.DataFrame({
+        future_df = pd.DataFrame({
             "year": future_years_list.flatten(),
             "poly_pred": preds
         })
+        # 음수 값 0으로 처리
+        future_df["poly_pred"] = future_df["poly_pred"].clip(lower=0)
+        return future_df
 
-    # ----------------------
     # ARIMA
-    # ----------------------
     def fit_arima(self, order=(2,1,2)):
+
         y = self.df["count"].values
         self.arima_model = ARIMA(y, order=order)
         self.arima_model = self.arima_model.fit()
 
+    # ARIMA 기반 예측
     def predict_arima(self, future_years: int = 5) -> pd.DataFrame:
+
         if self.arima_model is None:
             raise RuntimeError("ARIMA 모델이 학습되지 않았습니다.")
 
@@ -502,26 +493,25 @@ class Trend:
         last_year = self.df["year"].max()
         future_years_list = np.arange(last_year + 1, last_year + steps + 1)
 
-        return pd.DataFrame({
+        future_df = pd.DataFrame({
             "year": future_years_list,
             "arima_pred": preds
         })
+        # 음수 값 0으로 처리
+        future_df["arima_pred"] = future_df["arima_pred"].clip(lower=0)
+        return future_df
 
-    # ----------------------
     # Ensemble (가중 평균)
-    # ----------------------
     def ensemble_predictions(self, poly_future: pd.DataFrame, arima_future: pd.DataFrame,
                              w_poly: float = 0.3, w_arima: float = 0.7) -> pd.DataFrame:
-        """
-        Polynomial + ARIMA 가중 평균 결합
-        """
+
         merged = pd.merge(poly_future, arima_future, on="year")
         merged["ensemble_pred"] = merged["poly_pred"] * w_poly + merged["arima_pred"] * w_arima
+        # 음수 값 0으로 처리
+        merged["ensemble_pred"] = merged["ensemble_pred"].clip(lower=0)
         return merged
 
-    # ----------------------
     # 시각화
-    # ----------------------
     def plot_comparison(self, poly_future: pd.DataFrame, arima_future: pd.DataFrame, ensemble_future: pd.DataFrame):
         plt.figure(figsize=(9, 6))
 
