@@ -263,8 +263,10 @@ def main() -> None:
     hgnc_map = load_hgnc(args.hgnc)
     if hgnc_map:
         print(f"[INFO] HGNC synonyms loaded: {len(hgnc_map):,} entries")
-
     whitelist = load_whitelist(args.whitelist)
+    if not whitelist and hgnc_map:
+        whitelist = set(hgnc_map.values())
+        print(f"[INFO] Whitelist(auto): using {len(whitelist):,} HGNC symbols (keep only valid gene symbols)")
     if whitelist:
         print(f"[INFO] Whitelist loaded: {len(whitelist):,} symbols")
 

@@ -1,10 +1,13 @@
+
 """
-Step 1 GUI (PyQt5): Gene Counter Launcher — Auto-launch Step 2
---------------------------------------------------------------
-변경점
-- 분석 완료 시 Step 2를 **자동 실행**(기본 ON). 옵션 체크박스 추가.
-- pipeline_config.json 경로를 Step 2에 **자동 전달**(사용자 선택 불필요).
-- 기존 기능(라이트 테마, 드래그앤드롭, 유전자 직접 입력, 로그/진행상태) 유지.
+Step 1 GUI (PyQt5): Gene Counter Launcher — HGNC 정규화 '항상' 적용
+-----------------------------------------------------------------
+변경점 요약
+- ✅ HGNC 정규화를 **무조건 적용**하도록 변경 (선택/체크박스 제거)
+- ✅ 기본 경로: ./data/hgnc/hgnc_complete_set.txt (없으면 **자동 다운로드**, 사용자 확인 팝업 없음)
+- ✅ 실행 커맨드에 항상 --hgnc <경로> 부여 (다운로드 실패 시 실행 중단)
+- ✅ pipeline_config.json에 use_hgnc=True, hgnc_tsv=<경로> 기록
+- 기타 기존 기능(드래그앤드롭, 유전자 입력, Step 2 자동 실행, 폴더 열기, 로그 등) 유지
 """
 
 import json
@@ -12,7 +15,7 @@ import os
 import sys
 import time
 import warnings
-from typing import List
+from typing import List, Optional
 
 # --- Windows Qt plugins 경로 보정 (필요 환경에서만 동작) -------------------------------
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -60,6 +63,9 @@ def _ensure_qt_plugin_path():
 
 _ensure_qt_plugin_path()
 
+from pathlib import Path
+from urllib.request import urlretrieve
+
 from PyQt5.QtCore import Qt, QProcess, QSettings
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
@@ -85,6 +91,12 @@ from PyQt5.QtWidgets import (
 APP_ORG = "Genetwork"
 APP_NAME = "GeneCounterStep1"
 
+# HGNC 기본 다운로드 경로/파일명
+SCRIPT_DIR = Path(__file__).resolve().parent
+HGNC_DEFAULT_URL = "https://storage.googleapis.com/public-download-files/hgnc/tsv/tsv/hgnc_complete_set.txt"
+HGNC_DEFAULT_LOCAL = SCRIPT_DIR / "data" / "hgnc" / "hgnc_complete_set.txt"
+
+
 class Card(QFrame):
     def __init__(self, title: str = "", parent=None):
         super().__init__(parent)
@@ -100,6 +112,7 @@ class Card(QFrame):
             lbl.setFont(f); lbl.setObjectName("CardTitle")
             self.v.addWidget(lbl)
 
+
 class PdfListWidget(QListWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -109,16 +122,19 @@ class PdfListWidget(QListWidget):
         self.setDropIndicatorShown(True)
         self.setDragDropMode(QListWidget.NoDragDrop)
         self.setAlternatingRowColors(True)
+
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
         else:
             super().dragEnterEvent(event)
+
     def dragMoveEvent(self, event):
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
         else:
             super().dragMoveEvent(event)
+
     def dropEvent(self, event):
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
@@ -132,23 +148,27 @@ class PdfListWidget(QListWidget):
             event.acceptProposedAction()
         else:
             super().dropEvent(event)
+
     def _add_dir_pdfs(self, directory: str):
         for root, _, files in os.walk(directory):
             for name in files:
                 if name.lower().endswith(".pdf"):
                     self.add_unique_item(os.path.join(root, name))
+
     def add_unique_item(self, path: str):
         existing = [self.item(i).text() for i in range(self.count())]
         if path not in existing:
             self.addItem(path)
+
     def items(self) -> List[str]:
         return [self.item(i).text() for i in range(self.count())]
+
 
 class Step1Window(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("STEP 1 — Gene Counter 준비")
-        self.resize(980, 720)
+        self.setWindowTitle("STEP 1 — Gene Counter 준비 (HGNC 정규화 항상 적용)")
+        self.resize(980, 760)
         QApplication.setStyle("Fusion")
         self.apply_light_styles()
 
@@ -167,7 +187,7 @@ class Step1Window(QMainWindow):
         title = QLabel("Gene Counter 파이프라인 — Step 1")
         title_f = QFont(); title_f.setPointSize(15); title_f.setBold(True)
         title.setFont(title_f)
-        subtitle = QLabel("PDF를 모으고, 유전자 목록을 직접 입력한 뒤 ‘분석 시작’을 누르세요.")
+        subtitle = QLabel("PDF를 모으고, 유전자 목록(선택)을 입력한 뒤 ‘분석 시작’을 누르세요.\n※ HGNC 정규화는 기본적으로 항상 적용됩니다.")
         subtitle.setObjectName("SubTitle")
         header_layout.addWidget(title)
         header_layout.addWidget(subtitle)
@@ -200,7 +220,7 @@ class Step1Window(QMainWindow):
         pdf_v.addLayout(tools)
 
         # === 유전자 직접 입력 카드 ===
-        gene_card = Card("유전자 이름 직접 입력")
+        gene_card = Card("유전자 이름 직접 입력 (선택)")
         gene_v = gene_card.v
         gene_help = QLabel("한 줄에 하나씩 입력하세요. 예: TP53\n붙여넣기 후 ‘중복 제거’로 정리할 수 있습니다.")
         gene_row_tools = QHBoxLayout()
@@ -221,10 +241,10 @@ class Step1Window(QMainWindow):
         actions_row = QHBoxLayout()
         self.chk_autostep2 = QCheckBox("완료 후 자동으로 Step 2 실행"); self.chk_autostep2.setChecked(True)
         self.chk_open_folder = QCheckBox("완료 후 폴더 열기"); self.chk_open_folder.setChecked(True)
+        self.btn_run = QPushButton("분석 시작"); self.btn_run.setObjectName("PrimaryButton")
         actions_row.addWidget(self.chk_autostep2)
         actions_row.addWidget(self.chk_open_folder)
         actions_row.addStretch(1)
-        self.btn_run = QPushButton("분석 시작"); self.btn_run.setObjectName("PrimaryButton")
         actions_row.addWidget(self.btn_run)
 
         # === 상단 영역 묶기 ===
@@ -290,10 +310,10 @@ class Step1Window(QMainWindow):
             QLabel#SubTitle { color: #5f6b7a; }
             #Card { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 10px; }
             #CardTitle { color: #0f172a; }
-            QLineEdit, QTextEdit, QListWidget {
+            QTextEdit, QListWidget {
                 background: #ffffff; color: #0f172a; border: 1px solid #cbd5e1; border-radius: 8px; padding: 6px;
                 selection-background-color: #cfe0ff; }
-            QLineEdit:focus, QTextEdit:focus, QListWidget:focus { border: 1px solid #3b82f6; }
+            QTextEdit:focus, QListWidget:focus { border: 1px solid #3b82f6; }
             QPushButton, QToolButton { background: #ffffff; color: #0f172a; border: 1px solid #cbd5e1; border-radius: 8px; padding: 6px 10px; }
             QPushButton:hover, QToolButton:hover { border-color: #3b82f6; }
             QPushButton#PrimaryButton { background: #2563eb; border-color: #2563eb; color: white; font-weight: 600; padding: 10px 16px; }
@@ -311,13 +331,13 @@ class Step1Window(QMainWindow):
             if os.path.exists(p):
                 self.pdf_list.add_unique_item(p)
         self.chk_open_folder.setChecked(self.settings.value("open_folder", True, type=bool))
-        self.chk_autostep2.setChecked(self.settings.value("auto_step2", True, type=bool))  # ✅
+        self.chk_autostep2.setChecked(self.settings.value("auto_step2", True, type=bool))
         self.te_genes.setPlainText(self.settings.value("user_genes_text", ""))
 
     def save_settings(self):
         self.settings.setValue("pdfs", self.pdf_list.items())
         self.settings.setValue("open_folder", self.chk_open_folder.isChecked())
-        self.settings.setValue("auto_step2", self.chk_autostep2.isChecked())  # ✅
+        self.settings.setValue("auto_step2", self.chk_autostep2.isChecked())
         self.settings.setValue("user_genes_text", self.te_genes.toPlainText())
 
     # ------------------------ 유틸 ------------------------
@@ -327,7 +347,8 @@ class Step1Window(QMainWindow):
 
     def set_controls_enabled(self, enabled: bool):
         for w in [self.btn_pdf_add, self.btn_pdf_add_folder, self.btn_pdf_remove, self.btn_pdf_clear,
-                  self.btn_run, self.pdf_list, self.te_genes, self.btn_paste_clip, self.btn_dedup]:
+                  self.btn_run, self.pdf_list, self.te_genes,
+                  self.btn_paste_clip, self.btn_dedup]:
             w.setEnabled(enabled)
 
     def parse_user_genes(self) -> List[str]:
@@ -340,6 +361,28 @@ class Step1Window(QMainWindow):
             if g not in seen:
                 seen.add(g); genes.append(g)
         return genes
+
+    def ensure_hgnc_file(self, path: Path) -> Optional[Path]:
+        """HGNC TSV가 없으면 자동 다운로드(무조건 수행). 성공 시 경로 반환, 실패 시 None."""
+        path = Path(path)
+        if path.exists() and path.is_file():
+            return path
+
+        # 폴더 생성
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"폴더 생성 실패: {e}")
+            return None
+
+        try:
+            self.append_log(f"[HGNC] 파일이 없어 자동 다운로드를 시작합니다:\n  URL: {HGNC_DEFAULT_URL}\n  저장: {path}")
+            urlretrieve(HGNC_DEFAULT_URL, str(path))
+            self.append_log(f"[HGNC] 다운로드 완료: {path}")
+            return path
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"HGNC TSV 다운로드 실패: {e}")
+            return None
 
     # ------------------------ 입력 핸들러 ------------------------
     def on_add_pdfs(self):
@@ -402,6 +445,13 @@ class Step1Window(QMainWindow):
         cmd = [sys.executable, script_path]
         cmd.extend(pdfs)
         cmd.extend(["--global-out", global_csv, "--per-file-out", per_file_csv])
+
+        # ✅ HGNC 정규화 '항상' 적용
+        ok_path = self.ensure_hgnc_file(HGNC_DEFAULT_LOCAL)
+        if ok_path is None:
+            raise RuntimeError("HGNC TSV 준비 실패로 실행을 중단합니다.")
+        cmd.extend(["--hgnc", str(ok_path)])
+
         return cmd
 
     def compute_out_dir(self) -> str:
@@ -418,6 +468,9 @@ class Step1Window(QMainWindow):
             "global_csv": os.path.join(out_dir, "global_counts.csv"),
             "per_file_csv": os.path.join(out_dir, "per_file_counts.csv"),
             "user_genes": self.parse_user_genes(),
+            # 기록: 항상 정규화 적용
+            "use_hgnc": True,
+            "hgnc_tsv": str(HGNC_DEFAULT_LOCAL),
         }
         try:
             with open(cfg_path, "w", encoding="utf-8") as f:
@@ -438,7 +491,14 @@ class Step1Window(QMainWindow):
         self.last_out_dir = out_dir  # ✅ 기억
         self.append_log(f"출력 폴더: {out_dir}")
 
-        cmd = self.build_command(out_dir)
+        try:
+            cmd = self.build_command(out_dir)
+        except Exception as e:
+            # HGNC 준비 실패 등
+            self.progress.hide(); self.set_controls_enabled(True)
+            QMessageBox.critical(self, "실행 중단", str(e))
+            return
+
         pretty = " ".join([f'"{c}"' if " " in c else c for c in cmd])
         self.append_log(f"실행 커맨드:\n  {pretty}")
 
@@ -477,7 +537,7 @@ class Step1Window(QMainWindow):
         if exit_code == 0:
             # ✅ Step 2 자동 실행
             launched = False
-            if out_dir and (self.chk_autostep2.isChecked() if hasattr(self, "chk_autostep2") else True):
+            if out_dir and self.chk_autostep2.isChecked():
                 step2_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "step2_grn_selector.py")
                 cfg_path = os.path.join(out_dir, "pipeline_config.json")
                 if os.path.isfile(step2_path) and os.path.isfile(cfg_path):
