@@ -1,4 +1,11 @@
-# genemania_runner.py (견고판: SUID 비교 + 대기 + 폴백)
+# genemania.py
+
+"""
+GeneMANIA 추천 유전자 가져오기 (동의어 정리 제외 버전)
+- 전제: 입력 유전자 심볼은 이미 표준화되어 있음 (예: HGNC 심볼)
+- 필요: Cytoscape 실행 + GeneMANIA 앱 설치 + CyREST(기본 1234포트)
+"""
+
 from __future__ import annotations
 from typing import List, Optional
 from pathlib import Path
