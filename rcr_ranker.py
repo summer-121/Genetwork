@@ -321,4 +321,21 @@ def papers_sorted_by_rcr(
     return cleaned
 
 
+"""
+# play.py 이건 실행파일임
+from rcr_ranker import papers_sorted_by_rcr
 
+if __name__ == "__main__":
+    rows = papers_sorted_by_rcr(
+        "KDM3B", species="Homo sapiens",
+        max_papers=1000, top_n=20,
+        include_synonyms=True,
+        use_gene2pubmed_first=True,
+        date_from="2015",
+        email="you@example.com",
+        api_key=None,
+    )
+    for i, r in enumerate(rows, 1):
+        print(f"{i:>2}. PMID {r['pmid']} | RCR {r['relative_citation_ratio']} | {r['year']} | {r['title']}")
+
+"""
