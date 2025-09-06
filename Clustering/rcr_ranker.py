@@ -18,6 +18,9 @@ def _sleep(sec=0.34):
     time.sleep(sec)
 
 def _esummary_gene(session, gene_ids: List[str], tool, email, api_key):
+    """
+    ncbi gene에서 유전자에 대한 요약 정보인 esummary 정보를 받아옴
+    """
     r = session.get(
         f"{EUTILS}/esummary.fcgi",
         params={
