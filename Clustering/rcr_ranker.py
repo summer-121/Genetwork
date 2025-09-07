@@ -3,12 +3,16 @@
 유전자명으로 PubMed 논문을 모으고(i) NIH iCite에서 RCR을 조회한 뒤(ii)
 RCR 높은 순으로 정렬해 반환(iii)합니다.
 
+Gene_ids: List[str] 
+-> (_esummary_gene) / (gene_id_to_official_and_aliases) 
+-> Dict[Gene_id,dict[official,aliases:list[str]]]
+
 pip install requests
 """
 
 import time
 import requests
-from typing import List, Dict, Optional, Iterable
+from typing import List, Dict, Optional, Iterable, Tuple
 
 EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 ICITE_API = "https://icite.od.nih.gov/api/pubs"
@@ -35,12 +39,12 @@ def _esummary_gene(session, gene_ids: List[str], tool, email, api_key):
     return r.json().get("result", {})
 
 
-def alias_to_gene_name_from_esummary(esummary_result: Dict) -> Dict[str, str]:
+def gene_id_to_official_and_aliases(esummary_result: Dict) -> Dict[str, dict]:
     """
-    _esummary_gene(...)가 반환한 result 딕셔너리에서
-    {별칭 -> 공식 심볼(name/nomenclaturesymbol)} 매핑을 만들어 반환.
+    Gene ID를 키로 하여 {"official": 공식심볼, "aliases": [별칭,...]} 매핑을 생성.
+    _esummary_gene(...)가 반환한 result 딕셔너리를 그대로 입력으로 사용.
     """
-    out: Dict[str, str] = {}
+    out: Dict[str, dict] = {}
     for gid, doc in esummary_result.items():
         if gid == "uids" or not isinstance(doc, dict):
             continue
@@ -48,163 +52,192 @@ def alias_to_gene_name_from_esummary(esummary_result: Dict) -> Dict[str, str]:
         if not official:
             continue
         raw = doc.get("otheraliases") or ""
-        for part in raw.replace(";", ",").split(","):
-            alias = part.strip()
-            if len(alias) < 2:
-                continue
-            out.setdefault(alias, official)  # 같은 alias가 여러 유전자에 있으면 최초 매핑 유지
+        aliases = [a.strip() for a in raw.replace(";", ",").split(",") if len(a.strip()) >= 2]
+        # 중복 제거 및 자기 자신 제외
+        uniq: List[str] = []
+        seen = set()
+        for a in aliases:
+            if a and a != official and a not in seen:
+                uniq.append(a)
+                seen.add(a)
+        out[gid] = {"official": official, "aliases": uniq}
     return out
 
-def alias_to_gene_name_from_summary_doc(summary_doc: Dict) -> Dict[str, str]:
+
+
+
+
+def _esearch_pubmed_text(session, gene_map: Dict[str, dict], retmax: int,
+                         tool, email, api_key) -> Dict[str, List[str]]:
     """
-    ESummary에서 특정 Gene 문서 하나(summary_doc)만 있을 때
-    {별칭 -> 공식 심볼} 매핑을 만들어 반환.
+    gene_id_to_official_and_aliases(...) 결과를 입력으로 받아
+    official과 aliases를 모두 포함한 Title/Abstract 검색어를 구성해 Gene ID와 그에 따른 PubMed PMIDs가 매핑된 Dict를 반환.
+
+    입력 형식: {gene_id: {"official": str, "aliases": [str, ...]}, ...}
+    출력 형식: Dict{Gene_id: str , [PMID1,PMID2,...]: List[str]}
     """
-    official = (summary_doc.get("name") or summary_doc.get("nomenclaturesymbol") or "").strip()
-    if not official:
-        return {}
-    raw = summary_doc.get("otheraliases") or ""
-    aliases = [s.strip() for s in raw.replace(";", ",").split(",") if len(s.strip()) >= 2]
-    return {a: official for a in aliases}
+    results: Dict[str, List[str]] = {}
 
+    for gid, item in gene_map.items():
+        if not isinstance(item, dict):
+            continue
+        official = item.get("official")
+        aliases = item.get("aliases") or []
 
-def _esearch_pubmed_text(session, terms: List[str], species: str,
-                         date_from: Optional[str], retmax: int,
-                         tool, email, api_key) -> List[str]:
-    # Terms-only PubMed search (no species/date filters)
-    term_or = " OR ".join([f'"{t}"[Title/Abstract]' for t in terms])
-    q = f'({term_or})'
-    r = session.get(
-        f"{EUTILS}/esearch.fcgi",
-        params={
-            "db": "pubmed", "retmode": "json", "term": q,
-            "retmax": retmax, "tool": tool,
-            **({"email": email} if email else {}),
-            **({"api_key": api_key} if api_key else {}),
-        },
-        timeout=30,
-    )
-    r.raise_for_status()
-    return r.json().get("esearchresult", {}).get("idlist", [])
+        # No dedup: include official and aliases as-is (basic sanitization only)
+        terms: List[str] = []
+        if isinstance(official, str) and len(official.strip()) >= 2:
+            terms.append(official.strip())
+        for a in aliases:
+            if isinstance(a, str) and len(a.strip()) >= 2:
+                terms.append(a.strip())
 
-
-def _fetch_icite(session, pmids: List[str]) -> List[Dict]:
-    """
-    iCite API 응답이 list 또는 dict(에러/래핑)로 올 수 있으므로
-    안전하게 리스트만 추출하고, dict가 아니면 버립니다.
-    429/5xx에 대한 간단한 재시도도 포함합니다.
-    """
-    out: List[Dict] = []
-
-    def _normalize_payload(js):
-        # 응답 형태를 일관된 리스트로 변환
-        if isinstance(js, list):
-            return js
-        if isinstance(js, dict):
-            for key in ("data", "results", "articles", "pubs", "records"):
-                v = js.get(key)
-                if isinstance(v, list):
-                    return v
-            # dict이지만 리스트 래핑이 없다면, 단일 레코드일 수도 있으므로 감싸기
-            # 단, 최소한 pmid 같은 필드가 있는 dict일 때만
-            if any(k in js for k in ("pmid", "relative_citation_ratio", "title")):
-                return [js]
-            return []
-        # 그 외(str 등)는 무시
-        return []
-
-    def _is_good_item(x):
-        return isinstance(x, dict) and ("pmid" in x or "relative_citation_ratio" in x)
-
-    # iCite가 한 번에 200개까지 권장
-    for i in range(0, len(pmids), 200):
-        chunk = pmids[i:i+200]
-        # 숫자만 남기기(비정상 ID 제거)
-        chunk = [str(p) for p in chunk if str(p).isdigit()]
-        if not chunk:
+        if not terms:
+            results[gid] = []
             continue
 
-        # 간단 재시도(최대 3회)
-        backoff = 0.5
-        for attempt in range(3):
+        # Terms-only PubMed search (no species/date filters)
+        term_or = " OR ".join([f'"{t}"[Title/Abstract]' for t in terms])
+        q = f'({term_or})'
+        r = session.get(
+            f"{EUTILS}/esearch.fcgi",
+            params={
+                "db": "pubmed", "retmode": "json", "term": q,
+                "retmax": retmax, "tool": tool,
+                **({"email": email} if email else {}),
+                **({"api_key": api_key} if api_key else {}),
+            },
+            timeout=30,
+        )
+        r.raise_for_status()
+        pmids = r.json().get("esearchresult", {}).get("idlist", [])
+        results[gid] = pmids if isinstance(pmids, list) else []
+
+        try:
+            _sleep(0.34)
+        except Exception:
+            pass
+
+    return results
+
+
+def fetch_pmids_rcr_by_gene(
+    session,
+    pmids_by_gid: Dict[str, List[str]],
+    *,
+    default: float = 0.0,
+) -> Dict[str, List[Dict[str, float]]]:
+    """
+    _esearch_pubmed_text 결과(Result1: {gene_id: [PMID,...]})를 받아 iCite에서 RCR을 조회하고,
+    {gene_id: [{PMID: RCR}, ...]} 형태로 반환합니다. gene별 PMID 순서를 유지합니다.
+    """
+    # 1) 전역 PMID 유니크(순서 유지, 숫자만)
+    all_pmids: List[str] = []
+    seen = set()
+    for lst in pmids_by_gid.values():
+        if not isinstance(lst, list):
+            continue
+        for p in lst:
+            sp = str(p)
+            if sp.isdigit() and sp not in seen:
+                seen.add(sp)
+                all_pmids.append(sp)
+
+    # 2) iCite 조회하여 PMID -> RCR 매핑 생성
+    pmid_to_rcr: Dict[str, float] = {}
+    for i in range(0, len(all_pmids), 200):
+        chunk = all_pmids[i:i+200]
+        if not chunk:
+            continue
+        r = session.get(ICITE_API, params={"pmids": ",".join(chunk)}, timeout=60)
+        r.raise_for_status()
+        js = r.json()
+        items = js if isinstance(js, list) else (
+            js.get("data") or js.get("results") or js.get("articles") or js.get("pubs") or js.get("records") or []
+        )
+        if isinstance(items, dict):
+            items = [items]
+        for it in items if isinstance(items, list) else []:
             try:
-                r = session.get(ICITE_API, params={"pmids": ",".join(chunk)}, timeout=60)
-                # 429/5xx면 재시도
-                if r.status_code >= 500 or r.status_code == 429:
-                    time.sleep(backoff)
-                    backoff *= 2
-                    continue
-                r.raise_for_status()
-                js = r.json()
-                items = _normalize_payload(js)
-                out.extend([it for it in items if _is_good_item(it)])
-                break
-            except requests.RequestException:
-                time.sleep(backoff)
-                backoff *= 2
-        time.sleep(0.2)  # 예의상 rate-limit
+                pmid = str(it.get("pmid"))
+            except Exception:
+                pmid = None
+            if not pmid or not pmid.isdigit():
+                continue
+            v = it.get("relative_citation_ratio")
+            try:
+                rcr = float(v) if v is not None else default
+            except Exception:
+                rcr = default
+            pmid_to_rcr[pmid] = rcr
+
+    # 3) 출력 구성(원래 순서 유지)
+    out: Dict[str, List[Dict[str, float]]] = {}
+    for gid, lst in pmids_by_gid.items():
+        rows: List[Dict[str, float]] = []
+        if isinstance(lst, list):
+            for p in lst:
+                sp = str(p)
+                rcr = pmid_to_rcr.get(sp, default)
+                try:
+                    rcr_val = float(rcr) if rcr is not None else default
+                except Exception:
+                    rcr_val = default
+                rows.append({sp: rcr_val})
+        out[gid] = rows
+    return out
+
+def top_rcr_by_gene(
+    result2: Dict[str, List[Dict[str, float]]],
+    top_n: int,
+) -> Dict[str, List[Dict[str, float]]]:
+    """
+    Result2({gene_id: [{PMID: RCR}, ...]})를 입력으로 받아,
+    각 gene_id마다 RCR 상위 top_n개만 남겨 반환합니다.
+    반환 형태: {gene_id: [{PMID: RCR}, ...]}
+    """
+    out: Dict[str, List[Dict[str, float]]] = {}
+
+    for gid, rows in result2.items():
+        pairs: List[Tuple[str, float]] = []
+        if isinstance(rows, list):
+            for item in rows:
+                if isinstance(item, dict) and item:
+                    # one-item dict expected: {pmid: rcr}
+                    (pmid, rcr_raw) = next(iter(item.items()))
+                    try:
+                        rcr_val = float(rcr_raw) if rcr_raw is not None else 0.0
+                    except Exception:
+                        rcr_val = 0.0
+                    pairs.append((str(pmid), rcr_val))
+
+        # sort by RCR desc and take top_n
+        if top_n is not None and top_n > 0:
+            pairs.sort(key=lambda t: t[1], reverse=True)
+            pairs = pairs[:top_n]
+
+        out[gid] = [{pmid: rcr} for (pmid, rcr) in pairs]
 
     return out
 
 
-
-def sort_icite_by_rcr(items: Iterable[Dict], top_n: Optional[int] = None,
-                      keep_only_known_keys: bool = True) -> List[Dict]:
+def unique_pmids_from_top_by_gene(
+    result_top: Dict[str, List[Dict[str, float]]]
+) -> List[str]:
     """
-    iCite 결과(딕셔너리들의 반복자)를 RCR 기준으로 내림차순 정렬합니다.
-    - 정렬 키: (relative_citation_ratio, citations_per_year, year)
-    - top_n: 상위 N개만 반환(없으면 전체)
-    - keep_only_known_keys: True면 공통 키만 추려서 반환
+    top_rcr_by_gene 결과({gene_id: [{PMID: RCR}, ...]})에서
+    PMID들만 순서 유지하며 중복 없이 하나의 리스트로 반환.
     """
-    def _f(d: Dict, key: str, default: float = 0.0) -> float:
-        v = d.get(key)
-        try:
-            return float(v) if v is not None else default
-        except Exception:
-            return default
-
-    def _year(d: Dict) -> int:
-        try:
-            return int(d.get("year") or 0)
-        except Exception:
-            return 0
-
-    rows = [x for x in items if isinstance(x, dict)]
-    rows.sort(key=lambda d: (_f(d, "relative_citation_ratio"),
-                             _f(d, "citations_per_year"),
-                             _year(d)),
-              reverse=True)
-
-    if top_n:
-        rows = rows[:top_n]
-
-    if not keep_only_known_keys:
-        return rows
-
-    keep_keys = [
-        "pmid", "title", "year",
-        "relative_citation_ratio", "nih_percentile",
-        "citation_count", "citations_per_year",
-        "field_citation_rate", "provisional",
-    ]
-    return [{k: d.get(k) for k in keep_keys} for d in rows]
-
-
-"""
-# play.py 이건 실행파일임
-from rcr_ranker import papers_sorted_by_rcr
-
-if __name__ == "__main__":
-    rows = papers_sorted_by_rcr(
-        "KDM3B", species="Homo sapiens",
-        max_papers=1000, top_n=20,
-        include_synonyms=True,
-        use_gene2pubmed_first=True,
-        date_from="2015",
-        email="you@example.com",
-        api_key=None,
-    )
-    for i, r in enumerate(rows, 1):
-        print(f"{i:>2}. PMID {r['pmid']} | RCR {r['relative_citation_ratio']} | {r['year']} | {r['title']}")
-
-"""
+    out: List[str] = []
+    seen = set()
+    for rows in result_top.values():
+        if not isinstance(rows, list):
+            continue
+        for item in rows:
+            if isinstance(item, dict) and item:
+                pmid = next(iter(item.keys()))
+                sp = str(pmid)
+                if sp not in seen:
+                    seen.add(sp)
+                    out.append(sp)
+    return out

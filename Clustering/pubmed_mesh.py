@@ -40,12 +40,10 @@ def fetch_mesh_terms(
     out: Dict[str, List[str]] = {}
 
     # PMID 정제: 숫자만, 문자열화
-    clean_pmids = [str(p).strip() for p in pmids if str(p).strip().isdigit()]
-    if not clean_pmids:
-        return {}
+    
 
-    for i in range(0, len(clean_pmids), 200):
-        chunk = clean_pmids[i:i + 200]
+    for i in range(0, len(pmids), 200):
+        chunk = pmids[i:i + 200]
         r = session.get(
             f"{EUTILS}/efetch.fcgi",
             params={
@@ -101,22 +99,4 @@ def fetch_mesh_terms(
     return out
 
 
-def get_pubmed_mesh_terms(
-    pmids: List[str],
-    *,
-    tool: str = "genetwork",
-    email: Optional[str] = None,
-    api_key: Optional[str] = None,
-    include_qualifiers: bool = False,
-) -> Dict[str, List[str]]:
-    """세션 생성까지 포함한 간편 호출 래퍼."""
-    with requests.Session() as session:
-        return fetch_mesh_terms(
-            session,
-            pmids,
-            tool=tool,
-            email=email,
-            api_key=api_key,
-            include_qualifiers=include_qualifiers,
-        )
 
