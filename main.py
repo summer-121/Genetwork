@@ -1,8 +1,8 @@
 
-from library import Data
-from library import Importance
-from library import Pub_Analysis
-from library import Trend
+from lib_back import Data
+from lib_back import Importance
+from lib_back import Pub_Analysis
+from lib_back import Trend
 import pandas as pd
 
 # 출력 옵션 변경 (행, 열 모두 제한 해제)
@@ -17,14 +17,8 @@ email = "1018jjkk@gmail.com"
 data = Data(email)
 
 # 찾는 유전자, 종 이름
-gene = "p53"
+gene = "c-myc"
 org = "Homo sapiens"
-
-data.gene_summary(gene, org)
-
-pubmed_count = data.search_pubmed("UvrA")
-print(f"PubMed 논문 수: {pubmed_count}")
-
 
 # 원본 튜플 데이터 (이제 이걸 raw data에서 가져오는 방법을 모색해야 함)
 labels = (1, 0, 1, 0)
@@ -95,29 +89,29 @@ print(result_df[['SCORE_final', 'SCORE1', 'SCORE2']].head(10))
 all_results = imp.all_results()
 print(all_results)
 
-# 유전자 이름을 query로 한 PubMed 데이터 수집
 analyzer = Pub_Analysis(email)
-yearly_data = analyzer.get_yearly_publications(gene, 2018, 2025)
+
+# 연도별 논문 수
+yearly_data = analyzer.get_yearly_publications(gene, 2018, 2022)
 print("연도별 논문 수:", yearly_data)
 
-# 트렌드 분석 진행
-trend = Trend(yearly_data, degree=3)
+# 월별 논문 수
+monthly_data = analyzer.get_monthly_publications(gene, 2018, 2022)
+print("월별 논문 수:", monthly_data)
 
+# Trend 분석 (월 단위)
+trend = Trend(monthly_data, degree=3, freq="month")
+
+# Polynomial
 trend.fit_polynomial()
-poly_future = trend.predict_polynomial(future_years=5)
+poly_future = trend.predict_polynomial(future_periods=36)
 
-trend.fit_arima(order=(2,1,2))
-arima_future = trend.predict_arima(future_years=5)
+# ARIMA
+trend.fit_arima(order=(2, 1, 2))
+arima_future = trend.predict_arima(future_periods=36)
 
-ensemble_future = trend.ensemble_predictions(poly_future, arima_future, w_poly=0.3, w_arima=0.7)
-
-# 결과 출력
-print("\nPolynomial 예측 결과:")
-print(poly_future)
-print("\nARIMA 예측 결과:")
-print(arima_future)
-print("\nEnsemble 예측 결과 (0.3 Poly + 0.7 ARIMA):")
-print(ensemble_future)
+# Ensemble
+ensemble_future = trend.ensemble_predictions(poly_future, arima_future)
 
 # 시각화
 trend.plot_comparison(poly_future, arima_future, ensemble_future)

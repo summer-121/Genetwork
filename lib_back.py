@@ -2,21 +2,25 @@
 
 
 # 외부 라이브러리 모음집
-from Bio import Entrez                                                 # NCBI 접근용
-import numpy as np                                                     #  넘버링 관련
-import pandas as pd                                                    # 각종 툴이 잔뜩 들어있음. 분석 관련해서 가장 중요한 라이브러리
-from pandas.core.interchange.dataframe_protocol import DataFrame       # 데이터프레임 형성
-from scipy import stats                                                # 통계 모델
-from scipy.stats import norm                                           # 정규분포 모델
-from sklearn.metrics import roc_auc_score                              # ROC-AUC 계산
-import networkx as nx                                                  # 네트워크 분석 모델
-# import math                                                          # 이건 나중에 필요하게 되면 활성화할 예정. 수학적 계산 모델 일부 포함
-import time                                                            # 시간별 분석에 필요한 거
-from collections import defaultdict                                    # 정보 모아서 dictionary화
-import matplotlib.pyplot as plt                                        # 그래프 만드는 툴
-from sklearn.linear_model import LinearRegression                      # 선형회귀 모델
-from sklearn.preprocessing import PolynomialFeatures                   # 선형회귀 기반 다항회귀 모델
-from statsmodels.tsa.arima.model import ARIMA                          # 통계 툴, ARIMA 모델
+from Bio import Entrez                                                           # NCBI 접근용
+import numpy as np                                                               #  넘버링 관련
+import pandas as pd                                                              # 각종 툴이 잔뜩 들어있음. 분석 관련해서 가장 중요한 라이브러리
+from pandas.core.interchange.dataframe_protocol import DataFrame                 # 데이터프레임 형성
+from scipy import stats                                                          # 통계 모델
+from scipy.stats import norm                                                     # 정규분포 모델
+from sklearn.metrics import roc_auc_score                                        # ROC-AUC 계산
+import networkx as nx                                                            # 네트워크 분석 모델
+# import math                                                                    # 이건 나중에 필요하게 되면 활성화할 예정. 수학적 계산 모델 일부 포함
+import time                                                                      # 시간별 분석에 필요한 거
+from collections import defaultdict                                              # 정보 모아서 dictionary화
+import matplotlib.pyplot as plt                                                  # 그래프 만드는 툴
+from sklearn.linear_model import LinearRegression                                # 선형회귀 모델
+from sklearn.preprocessing import PolynomialFeatures                             # 선형회귀 기반 다항회귀 모델
+from statsmodels.tsa.statespace.sarimax import SARIMAX                           # 통계 툴, ARIMA 모델
+import GEOparse                                                                  # GEO raw data 접근
+import calendar
+
+
 
 # 1. Data_Access: 데이터베이스 접근용
 
@@ -189,7 +193,7 @@ class Importance:
 
         # p-value를 Z-score로 변환
         pclip = np.clip(pvals.values.astype(float), 1e-300, 1.0)     # 너무 작은 값 방지
-        Z_p_vals = -norm.ppf(pclip / 2.0)                           # scipy.stats.norm.ppf: 역누적분포함수
+        Z_p_vals = -norm.ppf(pclip / 2.0)                                         # scipy.stats.norm.ppf: 역누적분포함수
         Z_p_vals = np.nan_to_num(Z_p_vals, nan=0.0, posinf=0.0, neginf=0.0)       # 무한대/NaN 등이 있으면 0으로 대체
         Z_p = pd.Series(Z_p_vals, index=genes)
 
@@ -211,11 +215,11 @@ class Importance:
             try:
                 # sklearn.metrics.roc_auc_score는 레이블이 0/1이어야 함
                 if len(np.unique(vals[~np.isnan(vals)])) < 2:
-                    AUCs[g] = 0.5                                  # 모든 값이 동일하면 분류 불가 -> AUC=0.5로 처리
+                    AUCs[g] = 0.5                                   # 모든 값이 동일하면 분류 불가 -> AUC=0.5로 처리
                 else:
-                    AUCs[g] = roc_auc_score(y_true, vals)          # AUC 계산
+                    AUCs[g] = roc_auc_score(y_true, vals)           # AUC 계산
             except Exception:
-                AUCs[g] = 0.5                                      # 오류 발생 시 0.5로 대체
+                AUCs[g] = 0.5                                       # 오류 발생 시 0.5로 대체
 
         # AUC 범위 정규화
         AUC_absprime = np.abs(2.0 * (AUCs - 0.5))
@@ -242,13 +246,13 @@ class Importance:
     # SCORE1 계산 (발현 기반 종합 점수)
     def compute_score1(self):
 
-        b1, b2, b3 = self.beta_weights                     # beta 가중치를 언패킹
+        b1, b2, b3 = self.beta_weights                                                                         # beta 가중치를 언패킹
 
         SCORE1_raw = b1 * self.df_expr['Diff'] + b2 * self.df_expr['Rob'] + b3 * self.df_expr['AUC_absprime']  # SCORE1 raw 계산 (정규화 전 가중합)
 
-        self.df_expr['SCORE1_raw'] = SCORE1_raw            # raw 값을 DataFrame에 저장
+        self.df_expr['SCORE1_raw'] = SCORE1_raw                                                                # raw 값을 DataFrame에 저장
 
-        self.df_expr['SCORE1'] = self._min_max_series(SCORE1_raw)   # 0~1 정규화한 SCORE1 저장
+        self.df_expr['SCORE1'] = self._min_max_series(SCORE1_raw)                                              # 0~1 정규화한 SCORE1 저장
 
         return self.df_expr
 
@@ -292,12 +296,12 @@ class Importance:
 
         # eigenvector centrality 계산
         try:
-            eigen_centrality = nx.eigenvector_centrality_numpy(G)  # 행렬분해 기반 계산
+            eigen_centrality = nx.eigenvector_centrality_numpy(G)                         # 행렬분해 기반 계산
         except Exception:
             try:
                 eigen_centrality = nx.eigenvector_centrality(G, max_iter=200, tol=1e-06)  # power-iteration fallback
             except Exception:
-                eigen_centrality = {n: 0.0 for n in G.nodes()}    # 모두 실패 시 0으로 대체
+                eigen_centrality = {n: 0.0 for n in G.nodes()}                            # 모두 실패 시 0으로 대체
 
         # DataFrame으로 모아서 gene_list 순서로 재정렬(없는 값은 0으로 채움)
         df = pd.DataFrame({
@@ -398,140 +402,277 @@ class Importance:
 # 3-1. 트렌드 분석: 펍메드 논문 수 함수화
 
 class Pub_Analysis:
-    # 클래스 생성자
     def __init__(self, email: str, api_key: str = None):
         Entrez.email = email
         if api_key:
             Entrez.api_key = api_key
 
-    # PubMed에서 특정 년도의 유전자 이름을 가지는 논문 수 카운트 (현재는 모든 publication을 기반으로 하기 때문에 PubMed의 차트보다 수가 커 보일 수 있음)
-    def _search_pubmed(self, keyword: str, year: int) -> int:
+    def _search_pubmed(self, keyword: str, start_date: str, end_date: str) -> int:
 
-        query = f"\"{keyword}\"[tiab] AND {year}[PDAT]"                                                            # search query
-        handle = Entrez.esearch(db="pubmed", term=query, datetype="pdat", rettype = "count", retmode="xml")        # 펍메드 검색 조건, 검색 진행
-        record = Entrez.read(handle)                                                                               # 검색 결과 불러오기
+        query = f"{keyword} AND ({start_date}:{end_date}[PDAT])"
+        handle = Entrez.esearch(db="pubmed", term=query, datetype="pdat", rettype="count")
+        record = Entrez.read(handle)
         handle.close()
-        return int(record["Count"])                                                                                # 논문 수 결과값으로 반환
+        return int(record["Count"])
 
-    # 연도별 논문 수 만드는 함수
     def _fetch_yearly_counts(self, keyword: str, start_year: int, end_year: int) -> dict:
-
+        """
+        내부용 함수: 연도별 논문 수
+        """
         yearly_counts = defaultdict(int)
-        for year in range(start_year, end_year + 1):                                                # start year부터 end year까지 반복문으로 연도별 논문 수 확인
+        for year in range(start_year, end_year + 1):
             try:
-                count = self._search_pubmed(keyword, year)
+                start_date = f"{year}/01/01"
+                end_date = f"{year}/12/31"
+                count = self._search_pubmed(keyword, start_date, end_date)
                 yearly_counts[year] = count
-                time.sleep(0.34)  # API 호출 제한 준수 (초당 3회)
+                time.sleep(0.34)  # API rate 제한 준수
             except Exception as e:
-                print(f"Error in year {year}: {e}")
-        return dict(yearly_counts)                                                                  # 벡터 형태로 결과 반환
+                print(f"Error {year}: {e}")
+        return dict(yearly_counts)
 
-    # 실행용 파이프라인이라고 생각하면 됨
+    def _fetch_monthly_counts(self, keyword: str, start_year: int, end_year: int) -> dict:
+        """
+        내부용 함수: 월별 논문 수
+        """
+        monthly_counts = defaultdict(int)
+        for year in range(start_year, end_year + 1):
+            for month in range(1, 13):
+                start_date = f"{year}/{month:02d}/01"
+                last_day = calendar.monthrange(year, month)[1]
+                end_date = f"{year}/{month:02d}/{last_day:02d}"
+
+                try:
+                    count = self._search_pubmed(keyword, start_date, end_date)
+                    monthly_counts[f"{year}-{month:02d}"] = count
+                    time.sleep(0.34)
+                except Exception as e:
+                    print(f"Error {year}-{month:02d}: {e}")
+        return dict(monthly_counts)
+
+    # ---------------------------
+    # 최종 사용자 함수 (외부 인터페이스)
+    # ---------------------------
     def get_yearly_publications(self, keyword: str, start_year: int, end_year: int) -> dict:
-
+        """
+        최종 함수: 연도별 논문 수 반환
+        """
         return self._fetch_yearly_counts(keyword, start_year, end_year)
+
+    def get_monthly_publications(self, keyword: str, start_year: int, end_year: int) -> dict:
+        """
+        최종 함수: 월별 논문 수 반환
+        """
+        return self._fetch_monthly_counts(keyword, start_year, end_year)
 
 # 3-2. 트렌드 분석: 향후 5년 출판 논문 수 예측
 
 class Trend:
-    # 클래스 생성자
-    def __init__(self, data: dict, degree: int = 2):
-
-        self.df = pd.DataFrame(list(data.items()), columns=["year", "count"])
-        self.df.sort_values("year", inplace=True)
+    def __init__(self, data: dict, degree: int = 2, freq: str = "year"):
+        """
+        Trend 분석 클래스 (연도별/월별 모두 지원)
+        :param data: {연도: count} 또는 {"YYYY-MM": count} dict
+        :param degree: 다항 회귀 차수
+        :param freq: "year" 또는 "month"
+        """
         self.degree = degree
         self.poly = PolynomialFeatures(degree=self.degree)
+        self.model_poly = None
+        self.model_arima = None
+        self.freq = freq
 
-        # 모델 보관
-        self.poly_model = None
-        self.arima_model = None
+        # dict → DataFrame 변환
+        self.df = pd.DataFrame(list(data.items()), columns=["time", "count"]).sort_values("time")
 
+        if freq == "year":
+            # 연도 데이터는 그대로 숫자로 처리
+            self.df["time"] = self.df["time"].astype(int)
+        elif freq == "month":
+            # YYYY-MM 문자열을 datetime으로 변환
+            self.df["time"] = pd.to_datetime(self.df["time"], format="%Y-%m")
+            # 시계열 모델 편의를 위해 int index 생성 (예: 0,1,2,...)
+            self.df["t_index"] = np.arange(len(self.df))
+        else:
+            raise ValueError("freq는 'year' 또는 'month'만 지원합니다.")
+
+    # ----------------------
     # 다항 회귀
+    # ----------------------
     def fit_polynomial(self):
+        if self.freq == "year":
+            X = self.df[["time"]].values
+        else:  # month
+            X = self.df[["t_index"]].values
 
-        X = self.df[["year"]].values
         y = self.df["count"].values
         X_poly = self.poly.fit_transform(X)
-        self.poly_model = LinearRegression()
-        self.poly_model.fit(X_poly, y)
 
-    # 다항회귀 기반 예측
-    def predict_polynomial(self, future_years: int = 5) -> pd.DataFrame:
+        self.model_poly = LinearRegression()
+        self.model_poly.fit(X_poly, y)
 
-        if self.poly_model is None:
+    def predict_polynomial(self, future_periods: int = 12) -> pd.DataFrame:
+        if self.model_poly is None:
             raise RuntimeError("Polynomial 모델이 학습되지 않았습니다.")
 
-        last_year = self.df["year"].max()
-        future_years_list = np.arange(last_year + 1, last_year + future_years + 1).reshape(-1, 1)
-        future_poly = self.poly.transform(future_years_list)
-        preds = self.poly_model.predict(future_poly)
+        if self.freq == "year":
+            last_time = self.df["time"].max()
+            future_times = np.arange(last_time + 1, last_time + future_periods + 1).reshape(-1, 1)
+            X_poly_future = self.poly.transform(future_times)
+            preds = self.model_poly.predict(X_poly_future)
+            future_df = pd.DataFrame({"time": future_times.flatten(), "poly_pred": preds})
 
-        future_df = pd.DataFrame({
-            "year": future_years_list.flatten(),
-            "poly_pred": preds
-        })
-        # 음수 값 0으로 처리
+        else:  # month
+            last_index = self.df["t_index"].max()
+            future_idx = np.arange(last_index + 1, last_index + future_periods + 1).reshape(-1, 1)
+            X_poly_future = self.poly.transform(future_idx)
+            preds = self.model_poly.predict(X_poly_future)
+
+            future_dates = pd.date_range(start=self.df["time"].max() + pd.offsets.MonthBegin(1),
+                                         periods=future_periods, freq="MS")
+            future_df = pd.DataFrame({"time": future_dates, "poly_pred": preds})
+
         future_df["poly_pred"] = future_df["poly_pred"].clip(lower=0)
         return future_df
 
+    # ----------------------
     # ARIMA
-    def fit_arima(self, order=(2,1,2)):
-
+    # ----------------------
+    def fit_arima(self, order=(2, 1, 2), seasonal_order=(1, 1, 1, 12)):
+        """
+        SARIMA 모델 학습 (계절성 포함)
+        :param order: (p,d,q)
+        :param seasonal_order: (P,D,Q,s) - s=12 → 12개월 주기 계절성
+        """
         y = self.df["count"].values
-        self.arima_model = ARIMA(y, order=order)
-        self.arima_model = self.arima_model.fit()
+        self.model_arima = SARIMAX(y, order=order, seasonal_order=seasonal_order,
+                                   enforce_stationarity=False, enforce_invertibility=False).fit()
 
-    # ARIMA 기반 예측
-    def predict_arima(self, future_years: int = 5) -> pd.DataFrame:
+    def predict_arima(self, future_periods: int = 12) -> pd.DataFrame:
+        if self.model_arima is None:
+            raise RuntimeError("ARIMA/SARIMA 모델이 학습되지 않았습니다.")
 
-        if self.arima_model is None:
-            raise RuntimeError("ARIMA 모델이 학습되지 않았습니다.")
+        preds = self.model_arima.forecast(steps=future_periods)
 
-        steps = future_years
-        preds = self.arima_model.forecast(steps=steps)
+        if self.freq == "year":
+            last_time = self.df["time"].max()
+            future_times = np.arange(last_time + 1, last_time + future_periods + 1)
+            future_df = pd.DataFrame({"time": future_times, "arima_pred": preds})
+        else:  # month
+            future_dates = pd.date_range(start=self.df["time"].max() + pd.offsets.MonthBegin(1),
+                                         periods=future_periods, freq="MS")
+            future_df = pd.DataFrame({"time": future_dates, "arima_pred": preds})
 
-        last_year = self.df["year"].max()
-        future_years_list = np.arange(last_year + 1, last_year + steps + 1)
-
-        future_df = pd.DataFrame({
-            "year": future_years_list,
-            "arima_pred": preds
-        })
-        # 음수 값 0으로 처리
         future_df["arima_pred"] = future_df["arima_pred"].clip(lower=0)
         return future_df
 
-    # Ensemble (가중 평균)
+    # ----------------------
+    # Ensemble
+    # ----------------------
     def ensemble_predictions(self, poly_future: pd.DataFrame, arima_future: pd.DataFrame,
                              w_poly: float = 0.3, w_arima: float = 0.7) -> pd.DataFrame:
-
-        merged = pd.merge(poly_future, arima_future, on="year")
+        merged = pd.merge(poly_future, arima_future, on="time")
         merged["ensemble_pred"] = merged["poly_pred"] * w_poly + merged["arima_pred"] * w_arima
-        # 음수 값 0으로 처리
         merged["ensemble_pred"] = merged["ensemble_pred"].clip(lower=0)
         return merged
 
+    # ----------------------
     # 시각화
-    def plot_comparison(self, poly_future: pd.DataFrame, arima_future: pd.DataFrame, ensemble_future: pd.DataFrame):
-        plt.figure(figsize=(9, 6))
+    # ----------------------
+    def plot_comparison(self, poly_future, arima_future, ensemble_future):
+        plt.figure(figsize=(10, 6))
 
-        # 실제 데이터
-        plt.plot(self.df["year"], self.df["count"], marker="o", color="blue", label="Historical Data")
+        plt.plot(self.df["time"], self.df["count"], marker="o", color="blue", label="Historical")
 
-        # Polynomial 결과
-        plt.plot(poly_future["year"], poly_future["poly_pred"], "g--", marker="x", label=f"Polynomial (deg={self.degree})")
-
-        # ARIMA 결과
-        plt.plot(arima_future["year"], arima_future["arima_pred"], "r--", marker="s", label="ARIMA")
-
-        # Ensemble 결과
-        plt.plot(ensemble_future["year"], ensemble_future["ensemble_pred"], "k-", marker="d", linewidth=2,
+        plt.plot(poly_future["time"], poly_future["poly_pred"], "g--", marker="x", label=f"Polynomial (deg={self.degree})")
+        plt.plot(arima_future["time"], arima_future["arima_pred"], "r--", marker="s", label="ARIMA")
+        plt.plot(ensemble_future["time"], ensemble_future["ensemble_pred"], "k-", marker="d", linewidth=2,
                  label="Ensemble (0.3 Poly + 0.7 ARIMA)")
 
-        plt.xlabel("Year")
+        plt.xlabel("Time")
         plt.ylabel("Number of Publications")
-        plt.title("Publication Trend: Polynomial vs ARIMA vs Ensemble")
+        plt.title("Publication Trend Analysis")
         plt.legend()
         plt.grid(True)
         plt.tight_layout()
         plt.show()
+
+
+class GeoDataExtractor:
+    def __init__(self, geo_id: str):
+        self.geo_id = geo_id
+        self.gse = None
+        self.platform = None
+
+    def load_geo(self):
+        self.gse = GEOparse.get_GEO(geo=self.geo_id)
+        self.platform = list(self.gse.gpls.values())[0]
+
+    def extract_labels(self) -> pd.DataFrame:
+        parsers = {
+            "GSE15852": self._parse_labels_gse15852,
+            "GSE65212": self._parse_labels_gse65212,
+            "GSE152908": self._parse_labels_gse152908,
+        }
+        if self.geo_id in parsers:
+            return parsers[self.geo_id]()
+        else:
+            raise ValueError(f"{self.geo_id}에 대한 맞춤형 라벨 파서가 정의되지 않았습니다.")
+
+    def _parse_labels_gse15852(self):
+        """GSE15852: paired tumor vs normal breast tissue."""
+        metadata = []
+        for gsm_name, gsm in self.gse.gsms.items():
+            val = " ".join(sum(gsm.metadata.values(), [])).lower()
+            if "tumor" in val or "tumour" in val:
+                status = 1
+            elif "normal" in val:
+                status = 0
+            else:
+                status = None
+            metadata.append({"sample": gsm_name, "cancer_status": status})
+        return pd.DataFrame(metadata).set_index("sample").T
+
+    def _parse_labels_gse65212(self):
+        """GSE65212: tumor vs adjacent noncancerous vs complete normal."""
+        metadata = []
+        for gsm_name, gsm in self.gse.gsms.items():
+            val = " ".join(sum(gsm.metadata.values(), [])).lower()
+            if "tumor" in val or "cancer" in val:
+                status = 1
+            elif "adjacent" in val or "noncancerous" in val or "normal" in val:
+                status = 0
+            else:
+                status = None
+            metadata.append({"sample": gsm_name, "cancer_status": status})
+        return pd.DataFrame(metadata).set_index("sample").T
+
+    def _parse_labels_gse152908(self):
+        """GSE152908: includes cell lines, primary tumors, adjacent normal, and healthy tissue."""
+        metadata = []
+        for gsm_name, gsm in self.gse.gsms.items():
+            val = " ".join(sum(gsm.metadata.values(), [])).lower()
+            if "tumor" in val or "cancer" in val or "tumour" in val:
+                status = 1
+            elif "adjacent" in val or "uninvolved" in val or "normal" in val:
+                status = 0
+            else:
+                status = None
+            metadata.append({"sample": gsm_name, "cancer_status": status})
+        return pd.DataFrame(metadata).set_index("sample").T
+
+    def extract_expression(self, gene_list: list[str]) -> pd.DataFrame:
+        expression_data = []
+        for gene in gene_list:
+            probe_ids = (
+                self.platform.table[self.platform.table["Gene Symbol"] == gene]["ID"].tolist()
+            )
+            if not probe_ids:
+                continue
+            gene_values = {}
+            for gsm_name, gsm in self.gse.gsms.items():
+                vals = gsm.table[gsm.table["ID_REF"].isin(probe_ids)]["VALUE"].values
+                if len(vals) > 0:
+                    gene_values[gsm_name] = float(vals[0])
+            if gene_values:
+                expression_data.append(pd.Series(gene_values, name=gene))
+        return pd.DataFrame(expression_data)
