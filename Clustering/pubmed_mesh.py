@@ -100,3 +100,18 @@ def fetch_mesh_terms(
 
 
 
+def merge_mesh_terms(mesh_by_pmid: Dict[str, List[str]]) -> List[str]:
+    """
+    PMID -> MeSH 리스트 매핑을 하나의 리스트로 병합(중복 제거).
+
+    - 입력: ``{"PMID": ["Term1", "Term2", ...], ...}``
+    - 출력: 모든 PMID의 MeSH를 중복 없이 합친 리스트(첫 등장 순서 유지)
+    """
+    seen = set()
+    merged: List[str] = []
+    for _pmid, terms in mesh_by_pmid.items():
+        for t in terms:
+            if t and t not in seen:
+                seen.add(t)
+                merged.append(t)
+    return merged

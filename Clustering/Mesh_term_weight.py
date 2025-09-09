@@ -14,50 +14,6 @@ from itertools import combinations
 
 
 
-def flatten_mesh_terms(
-    mesh_by_pmid: Dict[str, List[str]],
-    *,
-    unique: bool = True,
-    case_insensitive: bool = False,
-    sort: bool = False,
-) -> List[str]:
-    """
-    {PMID -> [MeSH, ...]} 매핑(dictionary)에서 MeSH 문자열만 쭉 모아 하나의 리스트로 반환.
-
-    - unique=True: 중복 제거(첫 등장 순서 유지)
-    - case_insensitive=True: 대소문자 무시하고 중복 판단(원문 표기는 유지)
-    - sort=True: 최종 리스트를 알파벳 순으로 정렬(기본은 입력 순서 유지)
-    """
-    # 중복 제거 없이 단순 병합
-    if not unique:
-        out: List[str] = []
-        for terms in mesh_by_pmid.values():
-            if not terms:
-                continue
-            for t in terms:
-                if isinstance(t, str):
-                    out.append(t)
-        return sorted(out, key=(lambda s: s.casefold()) if case_insensitive else None) if sort else out
-
-    # 중복 제거(등장 순서 유지)
-    seen = set()
-    out: List[str] = []
-    for terms in mesh_by_pmid.values():
-        if not terms:
-            continue
-        for t in terms:
-            if not isinstance(t, str):
-                continue
-            key = t.casefold() if case_insensitive else t
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(t)
-
-    if sort:
-        out = sorted(out, key=(lambda s: s.casefold()) if case_insensitive else None)
-    return out
-
 
 def terms_to_pairs(terms: List[str]) -> List[Tuple[str, str]]:
     """Mesh_term 모아놓은 list 순서쌍으로 만드는 함수"""

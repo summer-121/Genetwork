@@ -29,7 +29,14 @@ from rcr_ranker import (
     top_rcr_by_gene,
     unique_pmids_from_top_by_gene,
 )
-from pubmed_mesh import fetch_mesh_terms
+from pubmed_mesh import fetch_mesh_terms, merge_mesh_terms
+from Mesh_term_weight import count_node_pairs_in_docs
+from clustering import (
+    leiden_cluster,
+    intra_cluster_mean_weight,
+    find_pairs_below_cluster_mean,
+)
+from itertools import combinations
 
 try:
     import pandas as pd
@@ -38,7 +45,8 @@ except ImportError:
 
 
 if __name__ == "__main__":
-    gene_ids = ["7157", "1956", "672", "2597", "55818"]
+    gene_ids = ["7157", "1956", "672", "675", "3845", "4893", "673", "5728", "5290", "207", "4609", "324", "4193", "5925", "1029", "2625", "2064", "5594", "4089", "1499"
+]
     top_n = 20
 
     with requests.Session() as s:
@@ -56,6 +64,49 @@ if __name__ == "__main__":
             s, unique_pmids, tool="GENETWORK", email=None, api_key=None, include_qualifiers=False
         )
 
+    # ----- Mesh_term_weight 단계: 쌍 집계 -----
+    # 1) 전체 고유 MeSH 용어 수집 (표시용)
+    unique_terms = list(dict.fromkeys(merge_mesh_terms(mesh_by_pmid)))
+
+    # 2) 후보 쌍(targets): 문서 내에서 함께 등장한 적 있는 쌍들의 합집합
+    candidate_pairs = set()
+    for terms in mesh_by_pmid.values():
+        if not terms:
+            continue
+        # 문서 내 중복 제거 후 가능한 쌍 생성
+        doc_set = sorted(set(t for t in terms if isinstance(t, str) and t))
+        if len(doc_set) >= 2:
+            for a, b in combinations(doc_set, 2):
+                candidate_pairs.add((a, b))
+
+    # 3) 문서 집합에서 각 쌍의 동시 등장 횟수 카운트 (대소문자 무시, 문서 내 중복 무시)
+    pair_counts = count_node_pairs_in_docs(
+        candidate_pairs,
+        mesh_by_pmid,
+        case_insensitive=True,
+        dedup_within_doc=True,
+    )
+
+    # ----- clustering 단계: Leiden + 평균 계산 + 평균 이하 간선 -----
+    # 노드 목록(정규화: casefold) 구성 — pair_counts의 키가 이미 정규화되어 있음
+    norm_nodes = sorted({t for pair in pair_counts.keys() for t in pair})
+
+    membership = leiden_cluster(
+        norm_nodes,
+        pair_counts,
+        resolution=1.0,
+        n_iterations=-1,
+        seed=42,
+        min_weight=1,
+    )
+
+    cluster_means = intra_cluster_mean_weight(membership, pair_counts)
+    pairs_below = find_pairs_below_cluster_mean(
+        membership,
+        pair_counts,
+        inclusive=False,            # 필요 시 True로 변경 가능(이하 포함)
+        include_missing_pairs=True, # 존재하지 않는 간선은 0으로 간주
+    )
     # pandas가 없으면 JSON 파일로만 저장
     if pd is None:
         print("pandas가 설치되어 있지 않습니다. pip install pandas openpyxl 후 다시 실행하세요.")
@@ -137,5 +188,54 @@ if __name__ == "__main__":
         df_result2(result2).to_excel(writer, index=False, sheet_name="pmids_rcr_by_gene")
         df_result2(top_by_gene).to_excel(writer, index=False, sheet_name="top_by_gene")
         df_mesh(mesh_by_pmid).to_excel(writer, index=False, sheet_name="mesh_terms")
+
+        # ----- 추가 결과: Mesh_term_weight / clustering -----
+        # 고유 용어 목록
+        pd.DataFrame({"term": unique_terms}).to_excel(writer, index=False, sheet_name="unique_terms")
+
+        # 쌍-가중치 표
+        if pair_counts:
+            rows_pairs = [
+                {"u": a, "v": b, "weight": int(w)} for (a, b), w in pair_counts.items()
+            ]
+            pd.DataFrame(rows_pairs).to_excel(writer, index=False, sheet_name="pair_counts")
+        else:
+            pd.DataFrame(columns=["u", "v", "weight"]).to_excel(writer, index=False, sheet_name="pair_counts")
+
+        # 군집 멤버십(노드→군집)
+        if membership:
+            rows_mem = [{"node": n, "cluster_id": cid} for n, cid in membership.items()]
+            pd.DataFrame(rows_mem).to_excel(writer, index=False, sheet_name="membership")
+        else:
+            pd.DataFrame(columns=["node", "cluster_id"]).to_excel(writer, index=False, sheet_name="membership")
+
+        # 군집별 평균 가중치
+        if cluster_means:
+            rows_means = [{"cluster_id": cid, "mean_weight": float(m)} for cid, m in cluster_means.items()]
+            pd.DataFrame(rows_means).to_excel(writer, index=False, sheet_name="cluster_means")
+        else:
+            pd.DataFrame(columns=["cluster_id", "mean_weight"]).to_excel(writer, index=False, sheet_name="cluster_means")
+
+        # 군집별 평균보다 낮은 간선 쌍
+        def get_weight(a: str, b: str) -> float:
+            w = pair_counts.get((a, b))
+            if w is None:
+                w = pair_counts.get((b, a))
+            return float(w) if w is not None else 0.0
+
+        rows_below = []
+        for cid, pairs in pairs_below.items():
+            mean_val = float(cluster_means.get(cid, 0.0))
+            for a, b in pairs:
+                rows_below.append({
+                    "cluster_id": cid,
+                    "u": a,
+                    "v": b,
+                    "weight": get_weight(a, b),
+                    "cluster_mean": mean_val,
+                })
+        pd.DataFrame(rows_below or [], columns=["cluster_id", "u", "v", "weight", "cluster_mean"]).to_excel(
+            writer, index=False, sheet_name="pairs_below_mean"
+        )
 
     print(f"Saved: {out_path}")
