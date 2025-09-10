@@ -10,7 +10,6 @@ from scipy import stats                                                         
 from scipy.stats import norm                                                     # 정규분포 모델
 from sklearn.metrics import roc_auc_score                                        # ROC-AUC 계산
 import networkx as nx                                                            # 네트워크 분석 모델
-# import math                                                                    # 이건 나중에 필요하게 되면 활성화할 예정. 수학적 계산 모델 일부 포함
 import time                                                                      # 시간별 분석에 필요한 거
 from collections import defaultdict                                              # 정보 모아서 dictionary화
 import matplotlib.pyplot as plt                                                  # 그래프 만드는 툴
@@ -18,7 +17,9 @@ from sklearn.linear_model import LinearRegression                               
 from sklearn.preprocessing import PolynomialFeatures                             # 선형회귀 기반 다항회귀 모델
 from statsmodels.tsa.statespace.sarimax import SARIMAX                           # 통계 툴, ARIMA 모델
 import GEOparse                                                                  # GEO raw data 접근
-import calendar
+import calendar                                                                  # 시계열 데이터 다루기
+from openai import OpenAI                                                        # 오픈ai
+import os
 
 
 
@@ -596,7 +597,7 @@ class Trend:
         plt.tight_layout()
         plt.show()
 
-
+# raw data 가져오기 (미완료)
 class GeoDataExtractor:
     def __init__(self, geo_id: str):
         self.geo_id = geo_id
@@ -676,3 +677,100 @@ class GeoDataExtractor:
             if gene_values:
                 expression_data.append(pd.Series(gene_values, name=gene))
         return pd.DataFrame(expression_data)
+
+# 논문 개수 기울기 분석
+class Slope:
+    def __init__(self, data: dict):
+        """
+        :param data: {연도: 논문 수} 또는 {"YYYY-MM": count} dict
+        """
+        self.df = pd.DataFrame(list(data.items()), columns=["time", "count"]).sort_values("time")
+
+    def compute_rate_of_change(self) -> pd.DataFrame:
+        """
+        변화율(%) 계산
+        """
+        self.df["rate_change"] = self.df["count"].pct_change() * 100
+        return self.df
+
+    def detect_significant_changes(self, threshold: float = 2.0) -> tuple:
+        """
+        유의미한 변화 시점 탐지 (평균 ± threshold*표준편차)
+        :param threshold: 표준편차 배수 (default=2.0 → 95% 수준)
+        :return: (연도1, 연도2, ...) 형태의 튜플
+        """
+        if "rate_change" not in self.df.columns:
+            self.compute_rate_of_change()
+
+        mean_change = self.df["rate_change"].mean(skipna=True)
+        std_change = self.df["rate_change"].std(skipna=True)
+
+        lower_bound = mean_change - threshold * std_change
+        upper_bound = mean_change + threshold * std_change
+
+        significant_years = self.df[
+            (self.df["rate_change"] < lower_bound) |
+            (self.df["rate_change"] > upper_bound)
+        ]["time"].tolist()
+
+        return tuple(significant_years)
+
+# ChatGPT를 활용해 분석
+class HelpGPT:
+    def __init__(self, model: str = "gpt-5"):
+        """
+        OpenAI ChatGPT API를 이용해 원인(reason) 추론
+        :param model: 사용할 모델 이름 (기본 gpt-5)
+        """
+        api_key = os.getenv("OPENAI_API_KEY")  # 환경변수에서 API 키 읽기
+        if not api_key:
+            raise ValueError("환경변수 OPENAI_API_KEY가 설정되지 않았습니다. "
+                             "터미널/환경설정에서 API 키를 등록하세요.")
+
+        self.client = OpenAI(api_key=api_key)
+        self.model = model
+
+    def analyze_changes(self, slope_df: pd.DataFrame, significant_years: tuple, gene: str) -> pd.DataFrame:
+        """
+        PubMed 변화율을 바탕으로 GPT에게 원인(reason) 추론 요청
+        :param slope_df: Slope 클래스 결과 DataFrame (time, count, rate_change 포함)
+        :param significant_years: 유의미한 변화 연도 리스트/튜플
+        :param gene: 분석 대상 유전자명
+        :return: DataFrame(year, rate_change, reason)
+        """
+        results = []
+
+        for year in significant_years:
+            row = slope_df[slope_df["time"] == year].iloc[0]
+            rate_change = row["rate_change"]
+
+            # 전후년도 출판량
+            prev_count = slope_df[slope_df["time"] == year - 1]["count"].values
+            next_count = slope_df[slope_df["time"] == year + 1]["count"].values
+
+            prev_count = int(prev_count[0]) if len(prev_count) > 0 else None
+            next_count = int(next_count[0]) if len(next_count) > 0 else None
+
+            # GPT 프롬프트
+            prompt = f"""
+            유전자: {gene}
+            연도: {year}
+            전년도 논문 수: {prev_count}
+            해당년도 논문 수: {row['count']}
+            다음년도 논문 수: {next_count}
+            변화율: {rate_change:.2f}%
+
+            위 데이터를 바탕으로, {year}년에 논문 수 변화가 발생한 학술적/사회적/기술적 배경을 추론해줘.
+            가능한 원인을 간단히 요약해 reason으로 제시해줘.
+            """
+
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3
+            )
+
+            reason = response.choices[0].message.content.strip()
+            results.append({"year": year, "rate_change": rate_change, "reason": reason})
+
+        return pd.DataFrame(results, columns=["year", "rate_change", "reason"])
