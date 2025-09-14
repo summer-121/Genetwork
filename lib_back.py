@@ -682,7 +682,7 @@ class GeoDataExtractor:
 class Slope:
     def __init__(self, data: dict):
         """
-        :param data: {연도: 논문 수} 또는 {"YYYY-MM": count} dict
+        :param data: {연도: 논문 수} 형태의 dict
         """
         self.df = pd.DataFrame(list(data.items()), columns=["time", "count"]).sort_values("time")
 
@@ -774,3 +774,53 @@ class HelpGPT:
             results.append({"year": year, "rate_change": rate_change, "reason": reason})
 
         return pd.DataFrame(results, columns=["year", "rate_change", "reason"])
+    
+# 유의미한 논문 수 변화에 대한 인덱스 부여
+class Index:
+    def __init__(self, data_dict: dict):
+        """
+        :param data_dict: {gene: {연도: count, ...}, ...} 형태의 딕셔너리
+                          예: {"p53": {2018: 451, 2019: 467}, "BRCA1": {...}}
+        """
+        self.data_dict = data_dict
+
+    def assign_index(self, threshold: float = 2.0) -> pd.DataFrame:
+        """
+        각 유전자에 대해 변화율 기반 인덱싱:
+        0 = 유의미한 변화 없음
+        1 = 유의미한 증가만 존재
+        2 = 유의미한 감소만 존재
+        3 = 유의미한 증가와 감소 모두 존재
+        :param threshold: 유의미성 기준 (표준편차 배수)
+        :return: DataFrame(gene, index, significant_years)
+        """
+        results = []
+
+        for gene, yearly_data in self.data_dict.items():
+            slope = Slope(yearly_data)
+            slope_df = slope.compute_rate_of_change()
+            significant_years = slope.detect_significant_changes(threshold=threshold)
+
+            if len(significant_years) == 0:
+                idx = 0
+            else:
+                changes = slope_df[slope_df["time"].isin(significant_years)]["rate_change"].dropna()
+                has_increase = any(changes > 0)
+                has_decrease = any(changes < 0)
+
+                if has_increase and has_decrease:
+                    idx = 3
+                elif has_increase:
+                    idx = 1
+                elif has_decrease:
+                    idx = 2
+                else:
+                    idx = 0
+
+            results.append({
+                "gene": gene,
+                "index": idx,
+                "significant_years": ", ".join(map(str, significant_years)) if significant_years else "-"
+            })
+
+        return pd.DataFrame(results, columns=["gene", "index", "significant_years"])
