@@ -97,7 +97,7 @@ def _esearch_pubmed_text(session, gene_map: Dict[str, dict], retmax: int,
 
         # Terms-only PubMed search (no species/date filters)
         term_or = " OR ".join([f'"{t}"[Title/Abstract]' for t in terms])
-        q = f'({term_or})'
+        q = f'({term_or}) AND medline[sb]'
  
         # 1) Snapshot search to get count + WebEnv/QueryKey (usehistory)
         r0 = session.get(

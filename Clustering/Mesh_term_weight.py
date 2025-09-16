@@ -22,7 +22,7 @@ def terms_to_pairs(terms: List[str]) -> List[Tuple[str, str]]:
 
 def count_node_pairs_in_docs(
     node_pairs: Iterable[Tuple[str, str]],
-    docs: Dict[str, List[str]],
+    mesh_by_pmid: Dict[str, List[str]],
     *,
     case_insensitive: bool = True,
     dedup_within_doc: bool = True,
@@ -48,11 +48,11 @@ def count_node_pairs_in_docs(
         if isinstance(a, str) and isinstance(b, str) and a != b
     }
     counts: Dict[Tuple[str, str], int] = {p: 0 for p in targets}
-    if not targets or not docs:
+    if not targets or not mesh_by_pmid:
         return counts
 
     # 2) 문서마다 존재 여부로 카운트
-    for terms in docs.values():
+    for terms in mesh_by_pmid.values():
         if not terms:
             continue
         norm_terms = [norm_term(t) for t in terms if isinstance(t, str)]
