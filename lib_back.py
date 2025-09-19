@@ -1,5 +1,5 @@
 # 구동 버전: 3.10.18
-
+from __future__ import annotations
 
 # 외부 라이브러리 모음집
 from Bio import Entrez                                                           # NCBI 접근용
@@ -11,7 +11,7 @@ from scipy.stats import norm                                                    
 from sklearn.metrics import roc_auc_score                                        # ROC-AUC 계산
 import networkx as nx                                                            # 네트워크 분석 모델
 import time                                                                      # 시간별 분석에 필요한 거
-from collections import defaultdict                                              # 정보 모아서 dictionary화
+from collections import Counter, defaultdict                                     # 정보 모아서 dictionary화
 import matplotlib.pyplot as plt                                                  # 그래프 만드는 툴
 from sklearn.linear_model import LinearRegression                                # 선형회귀 모델
 from sklearn.preprocessing import PolynomialFeatures                             # 선형회귀 기반 다항회귀 모델
@@ -20,58 +20,51 @@ import GEOparse                                                                 
 import calendar                                                                  # 시계열 데이터 다루기
 from openai import OpenAI                                                        # 오픈ai
 import os
+import pathlib
+import re
+from typing import Dict, List
+import fitz    #PyMuPDF의 namescape
+import spacy
 
 
 
 # 1. Data_Access: 데이터베이스 접근용
 
 class Data:
-    # 클래스 생성자
-    def __init__(self, email):
-
+    def __init__(self, email = "1018jjkk@gmail.com"):
+        """
+        데이터 접근 클래스 (NCBI Gene + PubMed)
+        """
         self.email = email
         Entrez.email = self.email
 
-    # 유전자 정보 요약 가져오기
-    def gene_summary(self, gene_name: str, organism: str):
-        try:
-            # 1. 유전자 검색
-            search_term = f"{gene_name}[Gene Name] AND {organism}[Organism]"
-            handle = Entrez.esearch(db="gene", term=search_term)
-            record = Entrez.read(handle)
-            handle.close()
+    def search_gene(self, gene_name):
+        """
+        NCBI Gene DB에서 특정 유전자를 검색해
+        Gene ID와 Gene 이름을 리스트로 반환
 
-            if not record["IdList"]:
-                print(f"'{gene_name}' 유전자 검색 결과 없음.")
-                return
-
-            gene_id = record["IdList"][0]
-            print(f"Found Gene ID for {gene_name}: {gene_id}")
-
-            # 2. 유전자 요약 정보 가져오기
-            handle = Entrez.esummary(db="gene", id=gene_id)
-            summary = Entrez.read(handle)
-            handle.close()
-
-            gene_info = summary['DocumentSummarySet']['DocumentSummary'][0]
-
-            print("\n유전자 요약 정보:")
-            print(f"Gene Symbol: {gene_info['NomenclatureSymbol']}")
-            print(f"Description: {gene_info['Description']}")
-            print(f"Chromosome: {gene_info['Chromosome']}")
-            print(f"Map Location: {gene_info['MapLocation']}")
-            print(f"Summary: {gene_info['Summary']}")
-
-        except Exception as e:
-            print(f"오류 발생: {e}")
-
-    # PubMed 기반 논문 수 찾아오기
-    def search_pubmed(self, gene_name):
-
-        handle = Entrez.esearch(db="pubmed", term=gene_name, retmode="xml")
+        :param gene_name: 유전자 이름 (예: "UvrA")
+        :return: [(gene_id, gene_name), ...] 형태의 리스트
+        """
+        handle = Entrez.esearch(db="gene", term=gene_name, retmode="xml")
         record = Entrez.read(handle)
         handle.close()
-        return int(record["Count"])
+
+        gene_list = []
+        for gid in record["IdList"]:
+            # Gene 정보 가져오기
+            h = Entrez.efetch(db="gene", id=gid, retmode="xml")
+            gene_record = Entrez.read(h)
+            h.close()
+
+            try:
+                official_name = gene_record[0]["Entrezgene_gene"]["Gene-ref"]["Gene-ref_locus"]
+            except (KeyError, IndexError):
+                official_name = "Unknown"
+
+            gene_list.append((gid, official_name))
+
+        return gene_list
 
 # 2. Importance: 중요도 계산 코드
 
@@ -824,3 +817,155 @@ class Index:
             })
 
         return pd.DataFrame(results, columns=["gene", "index", "significant_years"])
+
+# 논문 텍스트 마이닝 클래스
+
+class Text:
+    def __init__(
+        self,
+        model_name: str = "en_ner_jnlpba_md",
+        hgnc_path: pathlib.Path | None = None,
+        whitelist_path: pathlib.Path | None = None,
+        ref_weight: float = 0.5,
+        n_process: int = 1,
+        batch_size: int = 1000,
+    ):
+        # Load SciSpaCy model
+        try:
+            self.nlp = spacy.load(model_name)
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to load model {model_name}. Ensure SciSpaCy is installed. Reason: {e}"
+            )
+
+        # HGNC mapping and whitelist
+        self.hgnc_map = self.load_hgnc(hgnc_path)
+        self.whitelist = self.load_whitelist(whitelist_path)
+        if not self.whitelist and self.hgnc_map:
+            # auto whitelist from HGNC
+            self.whitelist = set(self.hgnc_map.values())
+
+        self.ref_weight = ref_weight
+        self.n_process = max(1, n_process)
+        self.batch_size = max(1, batch_size)
+
+        # Valid labels from SciSpaCy
+        self.VALID_LABELS = {"gene", "protein", "gene_or_gene_product"}
+
+    # ----------------------------------------------------------------------------------
+    # PDF → text
+    # ----------------------------------------------------------------------------------
+
+    def extract_pdf_pages(self, pdf_path: pathlib.Path) -> List[str]:
+        """Return a list of plain-text strings, one per page."""
+        pages: List[str] = []
+        try:
+            with fitz.open(pdf_path) as doc:
+                for page in doc:
+                    txt = page.get_text("text") or ""
+                    pages.append(txt)
+        except Exception as e:
+            raise RuntimeError(f"{pdf_path.name}: {e}")
+        return pages
+
+    def normalize_page_text(self, text: str) -> str:
+        """Light normalization for NER friendliness."""
+        text = re.sub(r"(\w)-\n(\w)", r"\1\2", text)  # join hyphenation
+        text = re.sub(r"\n{2,}", "\n\n", text)        # keep paragraph breaks
+        text = text.replace("\n", " ")
+        text = re.sub(r"\s{2,}", " ", text).strip()
+        return text
+
+    # ----------------------------------------------------------------------------------
+    # Lexicon helpers (HGNC + whitelist)
+    # ----------------------------------------------------------------------------------
+
+    def load_hgnc(self, tsv: pathlib.Path | None) -> Dict[str, str]:
+        """Load HGNC TSV and build alias→canonical mapping."""
+        mapping: Dict[str, str] = {}
+        if not tsv or not tsv.exists():
+            return mapping
+
+        import csv as _csv
+        with tsv.open(encoding="utf-8") as fh:
+            reader = _csv.DictReader(fh, delimiter="\t")
+            required = {"symbol", "alias_symbol", "prev_symbol"}
+            missing = [c for c in required if c not in reader.fieldnames]
+            if missing:
+                print(f"[WARN] HGNC TSV missing columns: {missing}")
+            for row in reader:
+                symbol = (row.get("symbol") or "").upper()
+                if not symbol:
+                    continue
+                mapping[symbol] = symbol
+                for col in ("alias_symbol", "prev_symbol"):
+                    val = row.get(col) or ""
+                    for token in (val.split("|") if val else []):
+                        token = token.strip().upper()
+                        if token:
+                            mapping[token] = symbol
+        return mapping
+
+    def load_whitelist(self, path: pathlib.Path | None) -> set[str]:
+        """Load whitelist of valid gene symbols (UPPERCASE)."""
+        if not path or not path.exists():
+            return set()
+        syms = set()
+        with path.open(encoding="utf-8") as fh:
+            for line in fh:
+                s = line.strip()
+                if not s or s.startswith("#"):
+                    continue
+                syms.add(s.upper())
+        return syms
+
+    # ----------------------------------------------------------------------------------
+    # Entity counting
+    # ----------------------------------------------------------------------------------
+
+    def count_entities_in_pages(self, pages: List[str]) -> Counter:
+        """Run NER per page with optional down-weighting after 'References'."""
+        cleaned: List[str] = [self.normalize_page_text(p) for p in pages]
+
+        # per-page weights
+        weights: List[float] = []
+        seen_refs = False
+        for p in pages:
+            if not seen_refs and re.search(r"\bReferences\b", p, flags=re.IGNORECASE):
+                seen_refs = True
+            weights.append(self.ref_weight if seen_refs else 1.0)
+
+        counts: Counter = Counter()
+        for doc, w in zip(
+            self.nlp.pipe(
+                cleaned,
+                n_process=self.n_process,
+                batch_size=self.batch_size,
+                disable=["parser", "attribute_ruler", "lemmatizer"],
+            ),
+            weights,
+        ):
+            for ent in doc.ents:
+                if ent.label_.lower() in self.VALID_LABELS:
+                    sym = ent.text.strip().upper()
+                    sym = re.sub(r"\s+", " ", sym)
+                    sym = sym.strip(";,:.()[]{}")
+                    # HGNC normalization
+                    sym = self.hgnc_map.get(sym, sym)
+                    # whitelist filter
+                    if self.whitelist and sym not in self.whitelist:
+                        continue
+                    counts[sym] += w
+        return counts
+
+    # ----------------------------------------------------------------------------------
+    # Main API
+    # ----------------------------------------------------------------------------------
+
+    def extract_genes_from_pdf(self, pdf_path: pathlib.Path) -> List[str]:
+        """Given a PDF path, return list of extracted gene/protein names."""
+        pages = self.extract_pdf_pages(pdf_path)
+        if not any(p.strip() for p in pages):
+            raise RuntimeError(f"No text layer found: {pdf_path.name} — skipped")
+        counts = self.count_entities_in_pages(pages)
+        return list(counts.keys())
