@@ -1,0 +1,39 @@
+2025-08-18 19:01:08,868 [DEBUG] py4...: Calling cytoscape_ping()
+2025-08-18 19:01:08,868 [DEBUG] py4...: ǀCalling cytoscape_version_info(base_url='http://127.0.0.1:1234/v1')
+2025-08-18 19:01:08,869 [DEBUG] py4...: ǀǀCalling cyrest_get('version', base_url='http://127.0.0.1:1234/v1')
+2025-08-18 19:01:08,869 [DEBUG] py4...: Attempting to direct connect to Cytoscape on http://127.0.0.1:1234/v1
+2025-08-18 19:01:09,114 [DEBUG] py4...: Detected py4cytoscape running on Cytoscape workstation
+2025-08-18 19:01:09,115 [DEBUG] py4...: ǀǀHTTP GET(http://127.0.0.1:1234/v1/version)
+2025-08-18 19:01:09,135 [DEBUG] py4...: ǀǀOK[200], content: {"apiVersion":"v1","cytoscapeVersion":"3.10.3"}
+2025-08-18 19:01:09,136 [DEBUG] py4...: ǀǀReturning 'cyrest_get': {'apiVersion': 'v1', 'cytoscapeVersion': '3.10.3'}
+2025-08-18 19:01:09,137 [DEBUG] py4...: ǀReturning 'cytoscape_version_info': {'apiVersion': 'v1', 'cytoscapeVersion': '3.10.3', 'automationAPIVersion': '1.12.0', 'py4cytoscapeVersion': '1.12.0'}
+2025-08-18 19:01:09,137 [DEBUG] py4...: Returning 'cytoscape_ping': 'You are connected to Cytoscape!'
+2025-08-18 19:01:09,137 [DEBUG] py4...: --------------------
+2025-08-18 19:01:09,138 [DEBUG] py4...: Calling cytoscape_version_info()
+2025-08-18 19:01:09,138 [DEBUG] py4...: ǀCalling cyrest_get('version', base_url='http://127.0.0.1:1234/v1')
+2025-08-18 19:01:09,138 [DEBUG] py4...: ǀHTTP GET(http://127.0.0.1:1234/v1/version)
+2025-08-18 19:01:09,154 [DEBUG] py4...: ǀOK[200], content: {"apiVersion":"v1","cytoscapeVersion":"3.10.3"}
+2025-08-18 19:01:09,155 [DEBUG] py4...: ǀReturning 'cyrest_get': {'apiVersion': 'v1', 'cytoscapeVersion': '3.10.3'}
+2025-08-18 19:01:09,155 [DEBUG] py4...: Returning 'cytoscape_version_info': {'apiVersion': 'v1', 'cytoscapeVersion': '3.10.3', 'automationAPIVersion': '1.12.0', 'py4cytoscapeVersion': '1.12.0'}
+2025-08-18 19:01:09,155 [DEBUG] py4...: --------------------
+2025-08-18 19:02:06,228 [DEBUG] py4...: Calling cytoscape_ping()
+2025-08-18 19:02:06,229 [DEBUG] py4...: ǀCalling cytoscape_version_info(base_url='http://127.0.0.1:1234/v1')
+2025-08-18 19:02:06,229 [DEBUG] py4...: ǀǀCalling cyrest_get('version', base_url='http://127.0.0.1:1234/v1')
+2025-08-18 19:02:06,229 [DEBUG] py4...: Attempting to direct connect to Cytoscape on http://127.0.0.1:1234/v1
+2025-08-18 19:02:06,304 [DEBUG] py4...: Detected py4cytoscape running on Cytoscape workstation
+2025-08-18 19:02:06,305 [DEBUG] py4...: ǀǀHTTP GET(http://127.0.0.1:1234/v1/version)
+2025-08-18 19:02:06,908 [DEBUG] py4...: ǀǀOK[200], content: {"apiVersion":"v1","cytoscapeVersion":"3.10.3"}
+2025-08-18 19:02:06,908 [DEBUG] py4...: ǀǀReturning 'cyrest_get': {'apiVersion': 'v1', 'cytoscapeVersion': '3.10.3'}
+2025-08-18 19:02:06,908 [DEBUG] py4...: ǀReturning 'cytoscape_version_info': {'apiVersion': 'v1', 'cytoscapeVersion': '3.10.3', 'automationAPIVersion': '1.12.0', 'py4cytoscapeVersion': '1.12.0'}
+2025-08-18 19:02:06,909 [DEBUG] py4...: Returning 'cytoscape_ping': 'You are connected to Cytoscape!'
+2025-08-18 19:02:06,909 [DEBUG] py4...: --------------------
+2025-08-18 19:02:06,909 [DEBUG] py4...: Calling commands_post('genemania geneList="uvrA" organism="Escherichia coli K12"')
+2025-08-18 19:02:06,910 [DEBUG] py4...: HTTP POST(http://127.0.0.1:1234/v1/commands/genemania), json: {'geneList': 'uvrA', 'organism': 'Escherichia coli K12'}
+2025-08-18 19:02:07,473 [DEBUG] py4...: Method Not Allowed[405], content: {
+"servlet":"org.ops4j.pax.web.service.spi.model.ServletModel-2",
+"message":"Method Not Allowed",
+"url":"/v1/commands/genemania",
+"status":"405"
+}
+2025-08-18 19:02:07,474 [DEBUG] py4...: 'commands_post' exception HTTPError('405 Client Error: Method Not Allowed for url: http://127.0.0.1:1234/v1/commands/genemania')
+2025-08-18 19:02:07,474 [DEBUG] py4...: --------------------
