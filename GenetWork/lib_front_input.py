@@ -8,7 +8,7 @@ GeNetwork - Frontend Page 1 (PySimpleGUI + backend Data.search_gene)
  3. Next 버튼 → Page 2 이동 (현재 미구현 안내)
 """
 
-import PySimpleGUI as sg     # 최신 버전으로 해야 함. 그냥 pip install PySimpleGUI로 하면 오류 발생.
+import PySimpleGUI as sg     # python -m pip install --force-reinstall --extra-index-url https://PySimpleGUI.net/install PySimpleGUI 로 PySimpleGUI 설치 필요
 from lib_back import Data
 
 
